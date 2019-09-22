@@ -1,4 +1,5 @@
-/qemu-4.1.0
-/riscv-gnu-toolchain
-/xv6-riscv
-/xv6-riscv-fall19
+qemu-4.1.0/
+riscv-gnu-toolchain/
+xv6-riscv/
+xv6-riscv-fall19/
+**/.vscode/
