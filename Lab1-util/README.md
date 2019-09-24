@@ -41,3 +41,7 @@ syscall(void)
 ```
 7. so what `li a7, SYS_sleep` does is it tells kernel that it wants to execute sys_sleep  
 (user programs store SYS_sleep in a7 and then kernel fetch a7's value)
+
+## primes.c
+why this happen?  
+![](./img/2019-09-24-22-38-14.png)
