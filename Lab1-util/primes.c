@@ -35,6 +35,7 @@ main(int argc, char const *argv[])
                 write(fd[1], &i, 4);
         close(fd[1]);
         wait();
+        sleep(3);
         close(1);
         exit();
     }

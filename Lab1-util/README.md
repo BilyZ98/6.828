@@ -44,4 +44,20 @@ syscall(void)
 
 ## primes.c
 why this happen?  
-![](./img/2019-09-24-22-38-14.png)
+![](./img/2019-09-24-22-38-14.png)  
+reason: races among sh, primes, and std buffer?  
+```
+wait();
+close(1);
+exit();
+```
+so when primes' all children and primes itself terminate,  
+races happen between sh and std buffer  input from primes and its children.  
+solution: use something like fflush(stdout)
+hack: add sleep() in primes
+```
+wait();
+sleep(3);
+close(1);
+exit();
+```
