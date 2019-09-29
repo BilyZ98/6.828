@@ -53,7 +53,7 @@ exit();
 ```
 so when primes' all children and primes itself terminate,  
 races happen between sh and std buffer  input from primes and its children.  
-solution: use something like fflush(stdout)
+solution: use something like fflush(stdout)  
 hack: add sleep() in primes
 ```
 wait();
