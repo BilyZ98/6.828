@@ -1,0 +1,331 @@
+6.S081/6.828 2019 Lecture 4: System Call Entry/Exit
+
+Today: how system calls get into / out of the kernel
+  the start of some detailed investigation of O/S internals
+
+What happens when a program calls write(fd, buf, n)?
+  [user/kernel diagram]
+  could we use an ordinary function call into the kernel?
+  that would be fast
+  and flexible -- easy to e.g. pass and return complex data types
+  and a mechanism familiar to programmers
+
+Can't use function call for system call!
+  Due to the need for isolation.
+  Isolation looms over much of O/S design.
+
+What is isolation?
+  enforced separation to contain effects of failures
+  the process is the usual unit of isolation
+  prevent process X from wrecking or spying on process Y
+    r/w memory, use 100% of CPU, change FDs, &c
+  prevent a process from interfering with the operating system 
+  in the face of malice as well as bugs
+    a bad process may try to trick the h/w or kernel
+
+the main isolation tools
+  address spaces
+    a process address only its own memory (not kernel, not other processes)
+    [user address space: 0..trapframe+trampoline]
+  privilege mode in CPU hardware
+    prevents a process from accessing devices and sensitive CPU register
+    e.g. address space configuration registers
+  syscall implementations explicitly enforce controls
+  careful user/kernel transfer (today)
+
+CPU privilege mode
+  on RISC-V: supervisor mode vs user mode
+  supervisor mode can do many things that user mode cannot
+    access devices
+    configure address spaces (virtual memory)
+    read/write special registers
+  the kernel runs in supervisor mode
+  ordinary programs run in user mode
+  every serious microprocessor has a similar user/kernel mode flag
+
+let's look at how xv6 system calls enter/leave the kernel
+  example: the shell printing a prompt with write(2, "$ ", 2)
+  [sh.c's write(2, "$ ", 2); emacs kernel/usys.S]
+  that's a C function call to write in usys.S
+  note the ecall instruction!
+
+the overall trajectory
+  write()
+    trampoline / uservec
+      usertrap() in trap.c
+        syscall() in syscall.c
+          sys_write() in sysfile.c
+      usertrapret()
+    trampoline / userret
+  write()
+
+what's the state of the machine at this point?
+  user address space, kernel address space
+  trampoline at top of user address space
+  trapframe just under the trampoline
+  kernel stack for shell in the kernel
+
+trapframe content, set up in advance by kernel
+  [on board]
+  see proc.h
+  kernel page table
+  kernel stack pointer
+  address of usertrap() function in kernel
+  space for saved user pc
+  space for 32 saved user registers
+
+special RISC-V registers (many more, here are relevant ones)
+  Chapter 10 in The RISC-V Reader
+  [on board]
+  stvec -- ecall jumps here in kernel; address of trampoline
+  sepc -- ecall saves user pc here
+  scause -- ecall sets to 8 to indicate a system call
+  sscratch -- address of trapframe
+  satp -- current page table
+
+C function calling convention on RISC-V
+  i.e. how function calls use the 32 RISC-V registers
+  important since system calls start as C function calls
+    e.g. shell's call to write()
+  a0..a7 -- arguments
+  ra -- return address
+  a0 -- return value
+
+Now I'll walk through the system call entry with the gdb debugger.
+  sh.asm says that write() function is at address 0xd68
+  let's start there
+
+$ make qemu-gdb
+(gdb) b *0xd68 -- write() in the shell
+(gdb) c
+(gdb) delete 1
+
+the "li a7, 16" tells the kernel which system call
+  SYS_write is 16
+  kernel code will eventually check user's register a7
+let's look at the registers
+
+(gdb) info reg
+
+$sp is a low address -- user memory starts at zero
+write() arguments: a0 is fd, a1 is buf, a2 is n
+
+(gdb) x/1c $a1
+
+the shell is printing the $ prompt
+
+(gdb) stepi
+
+the ecall instruction is going to switch to kernel mode!
+
+(gdb) stepi
+
+we're now in kernel mode.
+ecall did three things:
+  jump to $stvec (i.e. set $pc to $stvec)
+  save $pc in $sepc
+  change mode from user to supervisor -- we can't see this
+
+(gdb) print/x $pc
+(gdb) print/x $stvec
+
+the kernel earlier set up $stvec
+
+(gdb) print/x $sepc
+
+the hardware saves $pc since it overwrites it
+again, all registers but $pc still have precious user values
+
+(gdb) info reg
+
+note: ecall lets a user program switch to privileged supervisor mode
+  but it does *let* let the user program control what instructions
+    are executed in that mode.
+  ecall always jumps to $stvec, which only can be written in
+    supervisor mode (not by user programs), and which the
+    kernel carefully set up to a known entry point (trampoline).
+
+can we jump to kernel C functions at this point?
+no:
+  need to switch to kernel address space
+  need to save all 32 registers
+    they still hold user values
+    but kernel code will use (overwrite) the registers
+  need to make $sp to point to top of kernel stack
+why didn't RISC-V design have ecall do all these things automatically?
+
+how to save the 32 user registers?
+  we want to store them in the trapframe
+  but a store instruction needs an address, which must be in a register.
+  where to get the address?
+  what register to put it in, given that all 32 hold user values?
+the answer:
+  RISC-V has a special sscratch register, previously set by the kernel.
+  kernel set sscratch to the address of the trapframe.
+  csrrw instruction can exchange a register and sscratch
+
+we are now executing uservec in kernel/trampoline.S
+  the purpose of trampoline.S is to hold the machine code needed to set up for C
+uservec starts with csrrw a0, sscratch, a0
+saves user a0 in sscratch
+causes a0 to point to trapframe for saving user registers
+gdb has already executed this instruction (I don't know why)
+
+(gdb) print/x $a0 -- now points to trapframe in kernel
+(gdb) print/x $sscratch -- now holds saved user a0
+
+now there are 32 saves of user registers to the trapframe, via a0
+  so they can be restored when the system call returns
+  let's skip them
+
+(gdb) b *0x3ffffff076
+(gdb) c
+
+now we're setting up to be able to run C code in the kernel
+first a stack
+  previously, kernel put a pointer to top of this process's
+    kernel stack in trapframe
+  "ld sp, 8(a0)" fetches it
+  remember a0 points to the trapframe
+  at this point the only kernel object the code knows how to
+    get at is the trapframe, so everything has to be loaded from there.
+
+(gdb) stepi
+
+retrieve a pointer to info about the current process, from trapframe, into tp
+
+(gdb) stepi
+
+we want to jump to the kernel C function usertrap(), which
+  the kernel previously saved in the trapframe.
+  "ld t0, 16(a0)" fetches it into t0, we'll use it in a moment
+
+(gdb) stepi
+
+we are still running in an address space set up for the user program
+address spaces are configured using page tables, which the CPU knows about
+we need to tell the CPU to switch to the kernel page table / address space
+again, previously the kernel stashed a page table pointer in the trapframe
+we'll load the page table pointer into t1
+(more on page tables &c next lecture)
+
+(gdb) stepi
+(gdb) stepi
+
+the csrw satp, t1 actually installs the kernel page table
+now we can directly get at all kernel data and instructions
+
+(gdb) stepi
+
+the jr t0 is a jump to usertrap() (using t0 retrieved from trapframe)
+
+(gdb) stepi
+
+we're now in usertrap() in kernel/trap.c
+  various traps come here, e.g. errors, device interrupts, and system calls
+  it looks in the scause register to see that the trap is a sys call
+    see Figure 10.3 on page 102 of The RISC-V Reader
+  cause 8 is a system call
+
+(gdb) next ... until syscall()
+(gdb) step
+
+now we're in syscall() kernel/syscall.c
+it retrieves the system call number from saved register a7 (remember?)
+  p->tf points to the trapframe, with saved registers
+  p->tf->a7 holds 16, SYS_write
+  p->tf->a0 holds write() first argument -- fd
+  p->tf->a1 holds buf
+  p->tf->a2 holds n
+
+(gdb) next ...
+(gdb) print num
+
+then dispatches through syscall[num], a table of functions
+
+(gdb) next ...
+(gdb) step
+
+aha, we're in sys_write
+at this point system call implementations are fairly ordinary C code
+let's skip to the end, to see how a system call returns to user code
+
+(gdb) finish
+
+notice that write() produced console output (the shell's $ prompt)
+back to syscall()
+the p->tf->a0 assignment puts the sys call return value in user a0
+  will be restored later
+  the C calling convention on RISC-V puts return values in a0
+
+(gdb) print ret
+
+write() returned 2 -- two characters -- $ and space
+
+(gdb) finish
+
+back to usertrap()
+
+(gdb) next
+(gdb) step
+
+now we're in usertrapret(), which starts the process of returning
+  to the user program
+at the end, we'll use the RISC-V sret instruction
+  but we need to prepare a few registers that sret uses
+  sepc (user program counter)
+  sstatus (the "previous mode" bit)
+before sret we need to prepare for the next system call
+  set up trapframe and s* registers
+and we need to restore the user environment
+  restore user registers
+  switch to user address space
+code in usertrapret():
+  the w_stvec(TRAMPOLINE ...) causes ecall to jump to uservec (as we've seen)
+  the assignments to p->tf->... set up values the trampoline code will need
+    e.g. the address of the top of the kernel stack
+  the sstatus code will cause sret to return to user (non-privileged) mode
+  the w_sepc tells sret what user pc to resume at
+  ends with jump to userret in trampoline.S
+
+(gdb) b *0x3ffffff090
+(gdb) c
+
+the csrw satp switches to the user address space
+
+(gdb) stepi
+(gdb) stepi
+(gdb) stepi
+
+the csrw scratch puts the user a0 into sscratch
+  just before sret we'll do a swap,
+  so that a0 holds the user a0 and sscratch holds trapframe pointer.
+  which is what uservec expects.
+
+now lots of loads from the trapframe into registers
+  these restore the user registers
+
+(gdb) b *0x3ffffff10a
+
+here's the csrw that swaps a0 with sscratch
+
+(gdb) print/x $a0 -- the return value from write()
+(gdb) print/x $sscratch -- trapframe address for uservec
+
+now we're at the sret instruction
+
+(gdb) stepi
+
+now we're back in the user program (pc = 0xd6e)
+  returning 2 from the write() function
+
+(gdb) print/x $a0
+
+and we're done!
+
+summary
+  system call entry/exit is far more complex than function call
+  design is driven by the need for isolation
+  you should ask yourself whether all this complexity is needed
+    what other designs might be possible?
+  next lecture: address spaces, page tables, virtual memory

@@ -1,0 +1,145 @@
+<html>
+<head>
+<title>Lab: Simple xv6 shell</title>
+<link rel="stylesheet" href="labs.css" type="text/css" />
+</head>
+<body>
+
+<h2>Lab: Simple xv6 shell</h2>
+
+<p>
+This lab will shed light on how UNIX shells use basic system calls.
+
+<p>
+Your job is to write a simple shell for xv6. It should be able to run
+commands with arguments, handle input and output redirection, and set
+up two-element pipelines. Your shell should act like
+the xv6 shell <tt>sh</tt> for these examples as well as similar
+commands:
+
+<pre>
+echo hello there
+echo something > file.txt
+ls | grep READ
+grep lion < data.txt | wc > count
+echo echo hello | nsh
+find . b | xargs grep hello
+</pre>
+
+<p>
+You should put your shell source in <tt>user/nsh.c</tt>, and modify
+the <tt>Makefile</tt> to compile it.
+We'll test your <tt>user/nsh.c</tt> with our copies of
+other xv6 files; so while you can modify other files, your
+shell should not depend on those modifications.
+Your shell should use <tt>@</tt> (at sign) as a prompt rather
+than <tt>$</tt>, to avoid confusion with the real shell.
+An xv6 session with your shell might look like this:
+
+<pre>
+xv6 kernel is booting
+$ nsh
+@ grep Ken < README
+xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
+@ 
+</pre>
+
+<p>
+Please do <b>not</b> use a memory allocator such as <tt>malloc()</tt>.
+Instead you should use only local (stack-allocated) variables and
+global variables. It's OK to impose reasonable fixed limits on things
+like the maximum length of a command name, the maximum number of
+arguments, or the maximum length of any single argument.
+
+<p>
+We supply you with an xv6 test program <tt>testsh</tt>,
+source in <tt>user/testsh.c</tt>.
+You're
+done with the lab if your shell passes all the tests, like this:
+
+<pre>
+$ testsh nsh
+simple echo: PASS
+simple grep: PASS
+two commands: PASS
+output redirection: PASS
+input redirection: PASS
+both redirections: PASS
+simple pipe: PASS
+pipe and redirects: PASS
+lots of commands: PASS
+passed all tests
+</pre>
+
+
+</body>
+</html>
+
+<h3>Getting started</h3>
+
+<p>In this and future labs you will progressively build up your xv6,
+  but it will be handy to maintain a branch per lab:
+  <pre>
+  $ <kbd>git fetch</kbd>
+  $ <kbd>git checkout sh</kbd>
+  </pre>
+
+<p>You don't have to merge an earlier lab solution into subsequent
+  labs.  If you find you need some work from earlier lab, you are free
+  to merge it into later branches, but most labs are fairly
+  independent of each other.
+
+<p>
+Git allows switching between existing branches using <kbd>git
+checkout <i>branch-name</i></kbd>, though you should commit any
+outstanding changes on one branch before switching to a different
+one.
+
+<h3>Hints</h3>
+
+<p>
+You don't need to implement features that aren't required by the
+tests; for example, you don't have to implement parentheses or
+quoting.
+
+<p>
+The Kernighan and Ritchie C book is full of useful bits of code; feel
+free to incorporate any of it in your solution (with comments
+stating where you got the code). For
+example, you may find useful the <tt>gettoken()</tt> function from the
+parser in Section 5.12.
+
+<p>
+nsh is much simpler than xv6's sh in terms of features, so you are
+likely best off writing nsh from scratch.  But, you can look at the xv6
+shell source (in <tt>user/sh.c</tt>) for ideas, and borrow code, as
+long as you include comments saying where you got the code.
+
+<p>
+Xv6 supplies you with a small library of C functions in <tt>user/ulib.c</tt>;
+feel free to use them. As mentioned above,
+however, you are not allowed to use <tt>malloc()</tt>.
+
+<p>
+Remember to close un-needed file descriptors, both to avoid
+running out, and because a process reading a pipe won't see
+end-of-file until all the write descriptors for that pipe are closed.
+
+<p>
+Every system call in your code should check whether the call returned an error.
+
+<p>
+<tt>testsh</tt> redirects your shell's standard output, which means
+you won't see it. Your shell
+should print error and debug messages to file descriptor 2, the standard error,
+using <tt>fprintf(2,...)</tt>.
+
+<p>
+If <tt>testsh</tt> complains, it may help to modify
+<tt>testsh</tt> to print the command it wants your shell to run,
+and to modify your shell to print the command-line(s) it receives
+and the commands it executes.
+
+<p>
+Another helpful trick is to modify <tt>one()</tt> in <tt>testsh.c</tt>
+to print the output it read from your shell, and the output it expected.
