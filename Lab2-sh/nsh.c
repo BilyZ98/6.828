@@ -1,8 +1,8 @@
 /* Lab sh, features include:
     program exec - done
     IO redirection - done
-    pipe
-    many programs
+    pipe - done
+    many programs - done
 */
 
 #include "kernel/types.h"

@@ -16,3 +16,6 @@ shell implemention
 
 now we know, at least from the shell's perspective,  
 pipes change programs' **fds** before io redirection.
+
+## user/sh.c study and analysis
+P.S. gettoken() from K&R section 5.12
