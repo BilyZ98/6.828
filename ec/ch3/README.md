@@ -17,3 +17,41 @@ steps:
 
 view page table, breakpoint at procinit():
 ![](img/Screenshot_20191203_113751.png)
+
+## 4. prohibit address 0 in user program
+First, *Makefile* generate .text not from 0(from 0x1000 instead):
+```
+_%: %.o $(ULIB)
+	$(LD) $(LDFLAGS) -N -e main -Ttext 0x1000 -o $@ $^
+	$(OBJDUMP) -S $@ > $*.asm
+	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
+```
+
+Second, change initial `sz` in *exec.c*:
+```
+// Load program into memory.
+sz = 0;		->		sz = 4096;
+```
+
+~~Problem: p->sz ?~~  
+~~Now in *sysfile.c* line 426, 436~~  
+~~and *proc.c* line 323~~
+
+A process's `sz` has been split into two meanings.
+One for max address, the other for program size, i.e., max address - 4096
+
+Third, change `uvminit`, `uvmfree` and `uvmcopy` in *vm.c* 
+
+Fourth, change `userinit` and code of `initcode` in *proc.c*  
+initcode's argv has two element:
+```
+# char *argv[] = { init, 0 };
+.p2align 2
+argv:
+  .long init
+  .long 0
+```
+we should relocate `init` to be `0x1020` in *proc.c*'s `uchar initcode[]` 
+
+Left: how to handle page fault exception?
+![](img/Screenshot_20191205_113832.png)
