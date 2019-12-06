@@ -1,6 +1,8 @@
 #ifndef _RESOURCE_
 #define _RESOURCE_
 
+#define NRESOURCE 20
+
 enum rstate
 {
     FREE,
@@ -9,8 +11,9 @@ enum rstate
 
 struct resource
 {
-    unsigned int rid;
     enum rstate state;
+    unsigned int rid;
+    unsigned int pid;
 };
 
 #endif

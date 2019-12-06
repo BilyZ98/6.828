@@ -8,7 +8,7 @@ enum procstate
     READY,
     RUNNING,
     BLOCKED,
-    SUSPENDED,
+    SUSPENDED,                  // not used yet
     UNUSED
 };
 

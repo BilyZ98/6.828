@@ -5,8 +5,9 @@ enum type
     RUN,
     FINISH,
     REQUEST,
-    DELETE,
-    SHOW
+    SHOW,
+    TIMEOUT,
+    ACTIVATE
 };
 
 struct cmd
@@ -14,5 +15,6 @@ struct cmd
     enum type type;
     char proc_name[16];
     int priority;
+    int pid;
     int rid;
 };

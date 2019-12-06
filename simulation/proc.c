@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static struct proc proc[NPROC];
+struct proc proc[NPROC];
 static int irunning;
 
 static struct ready_proc ready_list[NPROC + 1];
@@ -43,7 +43,7 @@ struct proc *create_proc()
     return 0;
 
 FOUND:
-    if(p->resc || p->req)
+    if (p->resc || p->req)
         panic("previous proc's resource not free!");
     p->state = READY;
     return p;
@@ -67,6 +67,7 @@ void wakeup_proc(struct proc *p)
 
 void push_ready(struct proc *p)
 {
+    p->state = READY;
     ready_list[ready_tail].proc = p;
     ready_tail = (ready_tail + 1) % (NPROC + 1);
 
@@ -80,10 +81,10 @@ void show_procs()
 {
     int i;
     struct block_list *bl;
-    
+
     // show ready list:
     printf("%s:\n", "就绪READY");
-    if(ready_head == ready_tail)
+    if (ready_head == ready_tail)
         printf("none\n");
     else
         for (i = ready_head; i != ready_tail; i = (i + 1) % (NPROC + 1))
@@ -97,14 +98,15 @@ void show_procs()
     else
         printf("none\n");
     printf("\n");
-    
+
     // show blocked procs
     printf("%s:\n", "阻塞BLOCKED");
-    if(block_list)
-        for(bl = block_list; bl; bl = bl->next_proc)
+    if (block_list)
+        for (bl = block_list; bl; bl = bl->next_proc)
             show_proc(bl->proc);
     else
         printf("none\n");
+    printf("\n");
 }
 
 static void show_proc(struct proc *p)
@@ -140,14 +142,14 @@ void run_proc()
 {
     struct proc *p;
 
-    if(irunning >= 0)
+    if (irunning >= 0)
     {
         p = &proc[irunning];
         printf("process %s already running.\n", p->name);
         return;
     }
 
-    if(ready_head == ready_tail)
+    if (ready_head == ready_tail)
     {
         printf("no process can run.\n");
         return;
@@ -157,6 +159,9 @@ void run_proc()
     ready_head = (ready_head + 1) % (NPROC + 1);
     p->state = RUNNING;
     irunning = p->pid;
+
+    if (p->req)
+        requests(p->pid);
 }
 
 // finish process
@@ -166,20 +171,20 @@ void fin_proc()
     struct proc *p;
     struct resc_list *rl;
 
-    if(irunning < 0)
+    if (irunning < 0)
     {
         printf("no process is running.");
         return;
     }
 
     p = &proc[irunning];
-    if(p->req)
+    if (p->req)
     {
         printf("cannot finish process %s\n", p->name);
         rl = p->req;
         printf("it requests resource: %d", rl->resource->rid);
         rl->resource->state = FREE;
-        while((rl = rl->next_resource))
+        while ((rl = rl->next_resource))
         {
             printf(", %d", rl->resource->rid);
             rl->resource->state = FREE;
@@ -198,16 +203,120 @@ static void free_resc(struct resc_list *rl)
 {
     struct resc_list *prev_rl;
 
-    if(!rl)
+    if (!rl)
         return;
 
     printf("freeing resource:\n");
-    while(rl)
+    while (rl)
     {
         printf("rid: %d\n", rl->resource->rid);
         rl->resource->state = FREE;
         prev_rl = rl;
         rl = rl->next_resource;
         free(prev_rl);
+    }
+}
+
+// block list action
+
+void push_block(int pid)
+{
+    struct block_list *bl;
+    struct proc *p;
+
+    if (pid < 0 || pid >= NPROC)
+        panic("push_block: pid wrong!\n");
+
+    if (pid != irunning)
+    {
+        printf("process %d is not running, thus cannot blocks", pid);
+        return;
+    }
+
+    p = &proc[pid];
+    p->state = BLOCKED;
+    irunning = -1;
+    if (block_list)
+    {
+        bl = (struct block_list *)malloc(sizeof(struct block_list));
+        if (!bl)
+            panic("push_block: run out of memory!\n");
+        bl->proc = p;
+        bl->next_proc = block_list;
+        block_list = bl;
+    }
+    else
+    {
+        block_list = (struct block_list *)malloc(sizeof(struct block_list));
+        if (!block_list)
+            panic("push_block: run out of memory!\n");
+        block_list->proc = p;
+        block_list->next_proc = 0;
+    }
+}
+
+struct block_list *delete_block(struct block_list *prev_bl, struct block_list *bl)
+{
+    struct block_list *next_bl;
+
+    // prev_bl == 0 means bl == block_list
+    push_ready(bl->proc);
+    next_bl = bl->next_proc;
+    if (prev_bl)
+        prev_bl->next_proc = next_bl;
+    else
+        block_list = bl->next_proc;
+    free(bl);
+
+    return next_bl;
+}
+
+// timeout event
+
+void timeout()
+{
+    if (irunning < 0)
+        return;
+
+    push_block(irunning);
+    irunning = -1;
+}
+
+// activate event
+
+void activate()
+{
+    int actflag;
+    struct proc *p;
+    struct resc_list *rl;
+    struct block_list *bl, *prev_bl;
+
+    prev_bl = 0;
+    bl = block_list;
+    while (bl)
+    {
+        actflag = 1;
+        p = bl->proc;
+        if (p->req)
+        {
+            rl = p->req;
+            do
+            {
+                if (rl->resource->state == USED)
+                {
+                    actflag = 0;
+                    break;
+                }
+            } while ((rl = rl->next_resource));
+        }
+
+        // actflag == 1 means it can be unblocked
+        if (actflag)
+            bl = delete_block(prev_bl, bl);
+        else
+        {
+            prev_bl = bl;
+            bl = bl->next_proc;
+        }
     }
 }

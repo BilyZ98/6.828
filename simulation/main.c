@@ -11,6 +11,7 @@ int main()
     static char cmdline[MAXLINE];
     static struct cmd cmd;
 
+    init_resources();
     init_procs();
     while(getcmd(cmdline, sizeof(cmdline)) >= 0)
     {
