@@ -55,3 +55,17 @@ we should relocate `init` to be `0x1020` in *proc.c*'s `uchar initcode[]`
 
 Left: how to handle page fault exception?
 ![](img/Screenshot_20191205_113832.png)
+
+## 5. interpreting for sh
+refer to *sh.c* and *interpret*
+
+## 6. KASLR - kernel address space randomization (TODO)
+[https://wiki.qemu.org/Features/VirtIORNG](https://wiki.qemu.org/Features/VirtIORNG)
+[https://elixir.bootlin.com/linux/v2.6.28/source/include/linux/virtio_config.h](https://elixir.bootlin.com/linux/v2.6.28/source/include/linux/virtio_config.h)
+[https://elixir.bootlin.com/linux/v2.6.28/source/drivers/virtio](https://elixir.bootlin.com/linux/v2.6.28/source/drivers/virtio)
+
+In *Makefile*:
+```
+QEMUOPTS += -device virtio-rng-pci
+```
+next step?
