@@ -69,3 +69,5 @@ In *Makefile*:
 QEMUOPTS += -device virtio-rng-pci
 ```
 next step?
+
+The virtio doc in the directory of *xv6-riscv/doc* might be useful.

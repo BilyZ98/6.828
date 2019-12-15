@@ -15,8 +15,8 @@ enum procstate
 struct proc
 {
     enum procstate state;
-    struct proc *parent;        // not used yet
-    struct proc_list *child;    // not used yet
+    struct proc *parent; 
+    struct proc_list *child;
     struct resc_list *resc;
     struct resc_list *req;
 

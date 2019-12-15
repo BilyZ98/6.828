@@ -107,9 +107,9 @@ void runcmd(struct cmd *cmd)
     }
     else if (cmd->type == CREATE)
     {
-        if (cmd->priority <= 0)
+        if (cmd->priority < 0)
         {
-            printf("specify priority larger than 0!\n");
+            printf("priority less than 0!\n");
             return;
         }
 

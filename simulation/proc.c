@@ -141,6 +141,7 @@ static void show_proc(struct proc *p)
 void run_proc()
 {
     struct proc *p;
+    int i, j, priority;
 
     if (irunning >= 0)
     {
@@ -155,7 +156,23 @@ void run_proc()
         return;
     }
 
-    p = ready_list[ready_head].proc;
+    // fixed-priority pre-emptive scheduling
+    j = ready_head;
+    priority = ready_list[ready_head].proc->priority;
+    for (i = ready_head; i != ready_tail; i = (i + 1) % (NPROC + 1))
+    {
+        if (ready_list[i].proc->priority > priority)
+        {
+            priority = ready_list[i].proc->priority;
+            j = i;
+        }
+    }
+    p = ready_list[j].proc;
+    for (i = j; i != ready_head; i = j)
+    {
+        j = (i - 1 < 0) ? (i + NPROC) : (i - 1); // j = (i-1)%(NPROC+1)
+        ready_list[i].proc = ready_list[j].proc;
+    }
     ready_head = (ready_head + 1) % (NPROC + 1);
     p->state = RUNNING;
     irunning = p->pid;

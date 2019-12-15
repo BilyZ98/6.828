@@ -46,10 +46,24 @@ activate
 ```
 
 ## example
+fixed-priority pre-emptive scheduling:
 ```
 > create A 1
-> create B 2
-> create C 3
+> create B 3
+> create C 2
+> run               // B runs
+> finish
+> run               // C runs
+> finish
+> run               // A runs
+...
+```
+
+general:
+```
+> create A 1
+> create B 1
+> create C 1
 > run               // A runs
 > request 0 10
 > request 0 7
