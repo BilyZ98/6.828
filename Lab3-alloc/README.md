@@ -18,13 +18,14 @@ bd: 0x29000 bytes unavailable
 
 ## still have to optimize how the kernel uses the memory
 solution: dynamically allocating proc structures, not easy!!!(may done after learning **processes and switching**)  
-but how to debug locking bugs
+fail on usertests' forkfork:
 ```
-break proc.c:145
-179
-366
-377
+forkfork test
+scause 0x000000000000000d
+sepc=0x00000000800044e2 stval=0x80e7000010974509
+panic: kerneltrap
 ```
+but how to debug this kind of bugs?  
 see branch *alloc-debug-dynamically-proc-struct*
 
 ## design problem of buddy system
