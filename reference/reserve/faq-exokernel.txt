@@ -1,0 +1,321 @@
+Q: Are there any exokernel-based operating systems in active use?
+
+A: Not that we know of.
+
+In general you should expect the impact of research to take the form of ideas
+that influence later research and perhaps eventually commercial practice. This
+kind of influence is often hard to trace precisely, but here's what I
+think. Today's UNIX systems give applications far greater control over low-level
+mechanisms such as virtual memory than they did in the 1990s, probably due in
+part to the example set by the exokernel. Library operating systems are used
+reasonably frequently (look up the Unikernel), again due partly to the
+exokernel. Virtual machine monitors have exokernel-like low-level interfaces to
+guest operating systems.
+
+Why people don't use exokernels today? The short answer is that existing
+operating systems are good enough that no-one is going to be very motivated to
+switch to something new. The longer answer is that an industrial-strength
+operating system takes a huge amount of time and effort to develop, so someone
+has to believe it will be very popular before they devote the effort to develop
+an exokernel into a full-featured O/S. After all, to attract more than zero
+users you need to be at least as capable as whatever commercial or free O/S
+people are already using -- at least as many features, hardware support,
+performance in every dimension, support for X windows, TCP, &c. Even then, your
+users will have to port their applications to exploit the exokernel's special
+features (rather than just using a UNIX-compatible library O/S) if they want to
+get more performance from the exokernel than from Windows, Linux, &c. They won't
+do that unless they have a serious performance or flexibility problem with their
+current O/S.  Even then, it's typically more cost-effective to work around the
+limitations of your existing O/S than to port to a radically different
+platform. Sometimes niche situations (embedded controllers, smart phones, &c)
+come along that provide openings for new operating systems, but this requires a
+good deal of luck.
+
+Q: In what kind of applications is an exokernel operating system preferable?
+There are naturally tradeoffs with the extra flexibility provided e.g. it is
+easier to make a mistake in user code.
+
+A: An exokernel is most attractive to an application that needs to do
+something that is possible with an exokernel, but not possible with
+other kernels. The main area in which the 1995 exokernel paper increased
+flexibility was virtual memory. It turns out there are a bunch of neat
+techniques applications can use if they have low-level access to virtual
+memory mappings; the Appel and Li paper (citation [5]) discusses some of
+them. Examples include distributed shared memory and certain garbage
+collection tricks. Many operating systems in 1995 didn't give enough
+low-level access to virtual memory mappings to implement such
+techniques, but the exokernel did. The exokernel authors wrote a later
+paper (in SOSP 1997) that describes some examples in much more depth,
+including a web server that uses a customized file system layout to
+provide very high performance.
+
+Q: Does every process need its own library for abstractions (e.g. filesystems)?
+Wouldn't that cost a lot of space? How can they share?  Does library operating
+system refer to the library itself, or the combination of libary+exokernel?
+Does exposing names/allocation reveal too much information about other running
+processes (leading to security issue)?
+
+A: Every process would need a library operating system. Maybe the libraries
+would use a lot of memory, though this is rarely a serious problem. If
+it was a problem, the processes could probably arrange to share the
+physical pages containing the library, so that only one copy had to be
+stored in RAM.
+
+The paper uses "library operating system" to refer to the library
+itself, not to the kernel.
+
+I agree that there are probably things that the exokernel should not
+reveal to all processes, though nothing comes to mind at the moment.
+After all, anyone can run the ps command on Athena, and it doesn't seem
+to cause security problems.
+
+Q: What are some examples of library operating systems in use other than ExOS?
+Are library operating systems popular now in production?
+
+A: Have a look at the Unikernel:
+
+  http://anil.recoil.org/papers/2013-asplos-mirage.pdf
+
+Q: What exactly are the differences between microkernel vs exokernel?
+
+A: A microkernel focuses on IPC between processes. The intent is that most
+operating system functionality (e.g. file system, network protocols) be in
+user-level server processes. And that applications talk to those servers over
+IPC.
+
+An exokernel design expects that most O/S functionality take the form of
+library operating systems linked with each process.
+
+These definitions are not set in stone, and are not exclusive. JOS, for
+example, has elements of both.
+
+Q: It seems like the two architectures shift implementation complexity towards
+different ends - the exokernel places a lot of responsibility on the
+application-level programs, whereas much of this complexity is built into the
+monolithic kernel. In general, is one architecture more complicated to implement
+than the other? Or is the complexity just shifted towards different areas? Also,
+given all of the claimed improvements that an exokernel provides, what are the
+main reasons why monolithic kernels are more prevalent?
+
+A:  My guess is that, for equivalent overall functionality, a monolithic
+kernel would be simpler than an exokernel plus library operating system.
+I imagine the exokernel/library divide often made implementation of new
+O/S features difficult.
+
+Of course, the point of the paper is that the overall functionality is
+*not* equivalent -- an exokernel could let applications do things that
+were not possible with a typical 1995 monolithic kernel.
+
+Monolithic kernels are a convenient arrangement for kernel developers,
+and have evolved over the years to provide the services and performance
+that most applications need. So they have remained popular. Modern
+monolithic kernels provide some exokernel-like access to low-level
+hardware, particularly memory mappings via mmap(), mprotect(), &c.
+
+
+Q: Will the exokernel model make it significantly harder for application
+developers?  It seems like while it gives developers a lot more freedom, with
+that puts more burden on application developers to write stuff that performs
+well.
+
+A: An application developer could use the default library OS, which would
+require no special effort. The developer would only have to do
+exokernel-specific work to the extent that he or she wanted to take
+advantage of the exokernel's flexibility
+
+Q: Why are user-level implementations of application primitives like virtual
+memory so much faster with an exokernel? The paper explains that the exokernel
+primitives are fast because they are so low-level, which makes sense, but it
+says that application-level traditional kernel operations are also much
+faster. Why? Is it specific to the application, so a much faster exokernel VM
+implementation will be less generic than a slower monolithic kernel
+implementation?
+
+A: Are you asking about Table 10? Here are the factors I'm aware of that
+contribute to the exokernel's simple VM operations being faster than Ultrix's:
+
+* The exokernel's trap and system call path has fewer instructions than
+  Ultrix's, so each system call and page fault is faster.
+
+* The exokernel can forward an interrupt or page fault to the application much
+  faster than Ultrix can, again because the exokernel's version of this
+  machinery is simpler.
+
+* The exokernel exposes some data structures (e.g. the page table) directly to
+  the application, in read-only form, so that sometimes the application can
+  avoid a system call altogether.
+
+But this kind of speed is not really the point (though it is nice). The more
+fundamental way in which the exokernel designers hoped to get improved
+performance was via more flexibility for sophisticated applications. They wanted
+to support the neat VM tricks described in Appel and Li's paper (citation
+[5]). And the exokernel authors published a very interesting later paper (in
+SOSP 1997) describing some applications that got better performance via
+customized library OS's, e.g. a web server that uses a customized file system
+disk layout to provide very high performance.
+
+Q: What are the underlying reasons for generating the specific aspects of a
+prototype exokernel system in the design of Aegis rather than other design
+methods of a possible exokernel system, i.e. what specific features of Aegis
+were discussed to be advantages over other specific aspects of the monolithic
+kernel, and why those specific features?
+
+A: The paper says the main technical focuses of Aegis were flexible application
+access to virtual memory translations, fast IPC (protected control transfers),
+and fast user-level fault handlers. I suspect part of the motivation for these
+specific features was the Appel and Li paper, citation [5], which explains lots
+of neat tricks one could use if the kernel supported flexible and fast access to
+virtual memory translation and page faults.
+
+Q: Exokernels allow systems to be closer to the hardware but seem to have
+performance deficiencies when implementing simple functions that require higher
+privilege. An example we see is the fork system call in JOS, which requires a
+significant number of kernel calls to map pages to specific virtual
+addresses. How can you create both a minimal interface to the exokernel while
+also allowing such system calls like fork to remain performant?
+
+A: I think the Aegis authors would say that their system call overhead is
+small enough that they can get good performance even if you have to
+emulate fork() with a bunch of simpler VM system calls. And that for
+some applications, the existence of those simpler system calls lets
+applications do things that are not possible with just fork().
+
+You could have a kernel that provides both fork() and system calls that
+allow processes low-level access to virtual memory translations. Modern
+UNIXes (Linux, OSX, &c) come reasonably close to this, providing
+copy-on-write fork() as well as mmap(), mprotect(), madvise(), &c for
+low-level access.
+
+Q: Doesn't this exokernel design reduce the interoperability between programs
+running on the same platform? On regular monolithic systems, pretty much every
+program is using the same filesystem and same network primitives. If every
+program is responsible for these features themselves, then won't two programs
+only work together if they were designed for that?
+
+A: There is certainly potential for programs to use incompatible formats,
+and thus not be able to cooperate usefully. Of course this problem is
+not peculiar to the exokernel -- for example, my emacs cannot generally
+edit documents that Microsoft Word creates.
+
+The intent was that there would be a default library OS, so that in
+general different applications would use compatible file system formats,
+network protocols, &c. Only applications with special needs would
+customize the library OS, and even then developers would probably be
+careful to preserve compatibility where possible.
+
+
+Q: What is an example of a lightweight thread with correctness compromised?
+
+A: I don't know what they mean by correctness; I only understand the
+performance problem.
+
+By lightweight thread, they mean threads that are implemented purely at
+user level without the kernel knowing about individual threads. Like the
+6.828 user-level threads (uthread.c) homework.
+
+If such a thread blocks in the kernel, other threads in the same process
+won't run, even if the CPU is idle. A thread might block because it
+calls a blocking system call like read(), or because it takes a page
+fault on a page that the kernel needs to page in from disk.
+
+Operating systems that have kernel-supported threads (like Linux) avoid
+this problem, because the kernel knows that a specific thread is
+blocked, and can run a different thread from the same process.
+
+
+Q: I am curious about the inverted page tables mention in section 7.2; I looked
+at the description on
+https://en.wikipedia.org/wiki/Page_table#Inverted_page_table but I still don't
+quite understand how it works. From what I can tell it just seems like this is a
+single level paging structure using a hash function to index into the table
+instead of the two level structure we covered in class; I am not sure if this
+understanding is correct or if there is something more to this (and if this is
+correct, how is this "inverted"?)
+
+A:  Here is a better explanation:
+
+  http://www.cs.virginia.edu/~cs333/notes/virtual_memory4.pdf
+
+The underlying goal is to avoid using huge amounts of memory for page
+tables on machines with large virtual address spaces but much smaller
+physical memories. The "inverted page table" (IPT) is an array with one
+entry per page of physical memory, indexed by physical page number; each
+entry contains the process ID and virtual address (if any) that maps to
+that physical page. The IPT has size proportional to the number of
+physical pages of RAM, not proportional to the (much larger) number of
+pages of virtual address space. Because looking up a virtual address in
+an IPT would be slow, CPUs that use an IPT have some kind of TLB-like
+hashing arrangement to help find the right IPT entry for a virtual
+address. Typically there is one IPT for the whole system, which includes
+all process's mappings (rather than one page table per process).
+
+The problem with IPTs is that they let only one virtual address map to a
+given physical page, so they are awkward for shared memory (e.g.
+copy-on-write fork).
+
+The IPT is "inverted" because the array is indexed by physical address,
+whereas ordinary page tables are indexed by virtual address.
+
+
+Q: In section 6.1 shm, how does process synchronization (signaling) work in
+Ultrix without a yield primitive? And why Aegis’s yield system call in order to
+switch processes is much faster than using signaling?
+
+A: Signals are a UNIX mechanism that allows one process to alert another
+process. You can read about them with the "man signal" command. Signals are
+complex and slow, while yield is simple and fast. Sending a signal to a process
+causes UNIX to eventually schedule it for execution, so no explicit yield is
+needed.
+
+
+Q: It's not entirely clear to me how processes are yielded and preempt in this
+structure. Would a library user program take care of the scheduling in this
+structure? in That case, would the user program yield to it?
+
+A: The exokernel itself (not the library operating system) is in charge of
+deciding what environment to run next.
+
+The library operating system is really part of each application. If an
+application (or its library OS) wants to yield the CPU, it would call
+the exokernel's yield system call, and the exokernel would pick a new
+environment to run.
+
+If a timer interrupt occurs, the exokernel jumps back into the currently
+running environment to let it save its state; the environment is
+expected to call yield very rapidly thereafter.
+
+
+Q: Does giving applications such a low-level control of hardware significantly
+increase the chance that programmer error will make a device (such as a camera
+or network card) unavailable to other programs by failing to release a resource
+in a timely manner?
+
+A: I think Aegis had good stories for how to defend CPU and memory resources
+against application bugs. For other resources and devices it would depend on how
+the exokernel handled access. Some devices are inherently shareable, like a
+network interface or disk, and indeed later exokernel versions had ways to share
+the network (see the authors SOSP 1997 paper). A camera might be harder; perhaps
+only a single application at a time can sensibly use the camera, so if an
+application never released it, that might cause trouble. But I don't think this
+problem is special to the exokernel; any O/S is likely to have trouble if
+applications don't release single-use devices.
+
+Q: When two applications link the same library operating system is there only 1
+instance of the library or two separate one?
+
+A: I imagine Aegis had a separate copy of the library for each environment.
+But it's easy to imagine using the exokernel's flexible memory handling
+to arrange for the physical pages to be shared.
+
+Q: What does it means for Aegis to export the processor?
+
+A: I think it mostly means that Aegis lets applications execute instructions.
+
+Q: Can an application uses different library OS for each functionality. e.g one
+for virtual memory, another for > IPC, etc?
+
+A: I suspect many of the library calls are independent, so it would probably be
+OK in many cases to pick and choose functions from different libraries. And
+since the application developer is free to re-write the libraries, the developer
+could modify them to ensure that they worked together properly.
+

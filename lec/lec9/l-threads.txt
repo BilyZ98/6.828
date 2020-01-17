@@ -1,0 +1,326 @@
+6.S081/6.828 2019 Lecture 9: Processes, threads, and scheduling
+
+Topic: more "under the hood" with xv6
+  Previously: system calls, interrupts, page tables, locks
+  Today: process/thread switching
+
+Why support multiple tasks?
+  time-sharing among many users, as on Athena dialups.
+  multiple programs on a laptop.
+  concurrent activities on a controller.
+
+Potential multi-tasking goals
+  Isolation vs bugs, malice.
+  Sharing of hardware resources (CPU, memory, disk, net).
+  Mutual ignorance / transparency.
+  Efficiency.
+
+There are two main approaches to multi-tasking:
+  Threads: program execution appears sequential.
+  Events: programs are driven by arrival of events, like interrupts.
+
+UNIX and xv6 use a thread model, embodied in processes.
+
+Examples of sequential code suitable for the thread model.
+  1:
+    while(1){
+      x = wait for input;
+      x = x + 1;
+      print(x);
+    }
+  2:
+    while(1){
+      compute;
+    }
+
+thread design challenges
+  how to interleave threads if few CPUs?
+    how to make interleaving transparent?
+  what to do while first example waits for input?
+  how to prevent 2nd example from hogging a CPU?
+
+first, how to cope with compute-bound threads?
+  kernel isn't even running -- how can it switch among threads?
+  all CPUs have timer hardware, which can be told to interrupt periodically
+  kernel uses timer interrupts to grab control from looping threads
+  this is "pre-emptive" scheduling -- a forced yield of oblivious code
+
+second, what to do with thread that isn't running?
+  we need to set aside its state: registers, stack, memory
+  no need to worry about memory, it won't go anywhere
+  but we need to re-use CPU registers, so we must save them
+  and we need to preserve the thread's stack (contains call chain, local vars)
+  so implementation provides each thread with saved registers, stack
+
+xv6 provides threads for both user and kernel code:
+  [diagram]
+  1 user thread per process, to execute application
+  1 kernel thread per process, to execute system calls
+  1 kernel scheduler thread per CPU
+
+A process consists of two threads (user and kernel)
+  plus lots of other stuff -- memory, file descriptors, &c
+
+Overview of xv6 process switching
+  user -> kernel thread (via system call or timer interrupt)
+  kernel thread yields, due to pre-emption or waiting for I/O
+  kernel thread -> scheduler thread
+  scheduler thread finds a RUNNABLE kernel thread
+  scheduler thread -> kernel thread
+  kernel thread -> user
+
+struct proc in proc.h
+  trapframe holds saved user thread's registers
+  context holds saved kernel thread's registers
+    kstack holds kernel thread's stack
+
+terminology:
+  I will often use "thread" as shorthand for "a process's kernel thread"
+  an xv6 process is really a kernel thread, plus a user thread, plus
+    user memory, plus an array of file descriptors, &c
+
+Each xv6 process has a proc->state
+  RUNNING
+  RUNNABLE
+  SLEEPING
+  ZOMBIE
+  UNUSED
+
+Note:
+  xv6 has lots of kernel threads sharing the single kernel address space
+  xv6 has only one user thread per process
+  more serious O/S's (e.g. Linux) support multiple user threads per process
+
+Context-switching was one of the hardest things to get right in xv6
+  multi-core
+  locking
+  interrupts
+  process termination
+
+# Code
+
+pre-emptive switch demonstration
+  user/spin.c -- two CPU-bound processes
+  my qemu has only one CPU
+  let's watch xv6 switch between them
+
+make qemu-gdb
+gdb
+(gdb) c
+show user/spin.c
+spin
+
+you can see that they alternate, despite running continuously.
+xv6 is switching its one CPU between the two processes.
+how does the switching work?
+
+I'm going to cause a break-point at the timer interrupt.
+(gdb) finish
+(gdb) where
+
+we're in usertrap(), handling a device interrupt from the timer
+(timerinit() in kernel/start.c configures the RISC-V timer hardware).
+
+what was running when the timer interrupt happened?
+
+(gdb) print p->name
+(gdb) print p->pid
+(gdb) print/x *(p->tf)
+(gdb) print/x p->tf->epc
+
+let's look for the saved epc in user/spin.asm
+timer interrupted user code at pretty random location
+
+(gdb) step (into yield() in proc.c)
+(gdb) next
+(gdb) print p->state
+
+p->state = RUNNABLE -- giving up CPU but want to run again.
+note: yield() acquires p->lock
+  since modifying p->state
+  and to prevent another CPU from running this RUNNABLE thread!
+
+(gdb) step (into sched())
+
+sched() just calls swtch(), after some sanity checks
+this is the context switch from a process's kernel thread to the scheduler thread
+  we want to save away one set of registers (including PC and SP)
+  and restore another set of registers
+
+swtch():
+  it saves current 32 registers in first argument (p->context)
+  it restores previously-saved registers from 2nd argument (mycpu->scheduler)
+let's see what register values swtch() will restore
+
+(gdb) next
+(gdb) print/x cpus[0].scheduler (this is a context)
+
+where is cpus[0].scheduler.ra?
+  i.e. where will swtch() return to?
+  kernel.asm says it's in the scheduler() function in proc.c
+
+(gdb) tbreak swtch
+(gdb) c
+
+we're in kernel/swtch.S
+a0 is the first argument, p->context
+a1 is the second argument, cpus[0].scheduler
+swtch() saves current registers in xx(a0) (p->context)
+swtch() then restores registers from xx(a1) (cpus[0].scheduler)
+then swtch returns
+
+Q: note swtch() neither saves nor restores the PC (program counter)!
+   so how does it know where to start executing in target thread?
+
+(gdb) print $pc
+(gdb) print $ra
+(gdb) print $sp
+(gdb) stepi -- until ret
+(gdb) print $pc
+(gdb) print $ra
+(gdb) print $sp
+(gdb) where
+(gdb) stepi
+
+we're in scheduler() now, in the "scheduler thread",
+  on the scheduler's stack
+
+scheduler() just returned from a call to swtch()
+  it made that call a while ago, to switch to our process's kernel thread
+  that previous call saved scheduler()'s registers
+  our processes's call to swtch() restored those saved registers
+  p still refers to the interrupted process
+
+(gdb) print p->name
+(gdb) print p->pid
+(gdb) print p->state
+
+remember sched() acquired the process's lock
+  now scheduler releases it
+  it may *look* like scheduler aquires then releases
+    but in fact scheduler acquires, yield releases
+    an yield acquires, scheduler releases
+  unusual: the lock is released by a different thread than acquired it!
+
+Q: why does yield() acquire p->lock, but scheduler() release it?
+   what if another core's scheduler() sees the RUNNABLE process?
+
+scheduler()'s loop looks at all processes, finds a RUNNABLE one
+  will likely be the *other* spin process
+let's fast-forward to when scheduler() finds a RUNNABLE process
+
+(gdb) tbreak swtch
+
+now we're swtch()ing from scheduler() to a different thread
+  we can tell it's the other spin process
+
+(gdb) where
+(gdb) up
+(gdb) print p->name
+(gdb) print p->pid
+(gdb) print p->state
+
+let's see where the new thread will start executing after swtch()
+  by looking at $ra (return address) in its context
+
+(gdb) print/x p->context
+
+look for ra in kernel/kernel.asm
+  it's in sched(), just after a call to swtch()
+look at kernel/swtch.S (again)
+
+(gdb) stepi 28 -- now just about to execute swtch()'s ret
+(gdb) print $ra
+(gdb) where
+(gdb) step
+(gdb) print p->pid
+(gdb) print p->name
+(gdb) print/x p->tf->epc
+
+now we're in a timer interrupt in the *other* spin process
+  at some point in the past, it yielded the CPU
+  and called swtch()
+  (then other threads ran)
+  now swtch() is returning
+  and kernel will soon return from timer interrupt back to other spin process
+    and restore user registers from trapframe
+
+Q: what is the scheduling policy? 
+   will the thread that called yield() run immediately again?
+   is it a good policy?
+
+Q: why does scheduler() briefly enable interrupts, with intr_on()?
+   There may be no RUNNABLE threads
+     They may all be waiting for I/O, e.g. disk or console
+   Enable interrupts so device has a chance to signal completion
+     and thus wake up a thread
+   Otherwise, system will freeze
+
+sched() and scheduler() are "co-routines"
+   caller knows what it is swtch()ing to
+   callee knows where switch is coming from
+   e.g. yield() and scheduler() cooperate about p->lock
+   different from ordinary thread switching, where neither
+     party typically knows which thread comes before/after
+
+Q: how does sched() know scheduler() thread is ready for it to swtch() into?
+   could it be anywhere other than swtch()?
+
+Q: could sched() directly swtch() to a new thread?
+   i.e. get rid of separate scheduler thread?
+   so that sched() looks for next process to run?
+   yes, and it would be faster.
+   but care would be needed to maintain above invariants.
+     i.e. some tricky locking and stack switching.
+   give it a try!
+
+Q: is there pre-emptive scheduling of kernel threads?
+   yes -- timer interrupt and yield() can occur while in kernel.
+   yield() called by kerneltrap() in kernel/trap.c
+   where to save registers of interrupted kernel code?
+     can't save them in p->tf trapframe, since already has user registers.
+     kernelvec.S pushes them on the kernel stack (since already in kernel).
+   is pre-emption in the kernel useful?
+     not critical in xv6.
+     valuable if some system calls have lots of compute.
+     or if we need a strict notion of thread priority.
+
+p->lock protects multiple invariants:
+  (invariant = true when p->lock not held, maybe not true if held)
+  if RUNNING, CPU registers hold the values (not in p->context)
+  if RUNNABLE, p->context holds its saved registers
+  if RUNNABLE, no CPU is using its stack
+  holding p->lock from yield() all the way to scheduler enforces:
+    another CPU can't execute p until after this CPU stops using its stack
+    interrupts off, so no nested yield()+swtch() during swtch() save/restore
+
+fact: xv6 always turns off interrupts while a thread holds any spinlock
+  motivating example:
+    consoleread() looking for keyboard input
+      acquire(cons.lock), looks at cons.buf, release(cons.lock)
+    what if console interrupt while consoleread() holds lock?
+    consoleintr() tries to acquire cons.lock
+      but interrupt runs on the same stack as interrupted kernel code
+      consoleread() can't release until consoleintr() returns
+    that's a deadlock!
+  so: acquire() disables interrupts, release() enables them
+    just on the local CPU
+    other CPUs can still take interrupts
+
+Q: why does sched() forbid locks from being held when yielding the CPU?
+   (other than p->lock)
+   i.e. sched() checks that noff == 1
+   suppose process P1 holding lock L1, yields CPU
+   process P2 runs, tries acquire(L1)
+   P2's acquire spins with interrupts turned off
+     so timer interrupts won't occur
+     so P2 won't yield the CPU
+     so P1 can't execute
+     so P1 won't release L1, ever
+
+Summary
+  xv6 provides a convenient thread model, for user and kernel
+  pre-emptive via timer interrupts
+  transparent via switching registers and stack
+  multi-core prompts careful handling of stacks, locks
+  next lecture: mechanisms for threads to wait for each other

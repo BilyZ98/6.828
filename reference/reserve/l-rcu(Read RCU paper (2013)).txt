@@ -1,0 +1,284 @@
+6.S081/6.828 2019 L20: Multi-Core scalability and RCU
+
+Today's topic: 
+  Multi-core kernel performance for read-heavy shared data.
+  RCU (Read-Copy Update): very successful in Linux.
+
+Parallelism is often crucial for high performance.
+  A kernel's parallelism is driven by lots of processes making system calls.
+  When can system calls run in parallel?
+    Requires the calls to be mostly independent.
+    I.e. not much shared r/w data, lock conflicts, or I/O sleep()s.
+  Ignoring details, there's good reason for hope:
+    Parallel fork -- copying different regions.
+    Parallel read from cached file blocks.
+    Parallel read/write on different pipes.
+
+It's often hard to get the parallel performance you deserve.
+  Shared read/write data and locking often force sequential execution.
+    Memory allocator, scheduler, disk cache, i-node cache, &c.
+    The usual symptom is CPU time wasted spinning in acquire().
+  Huge effort in production kernels to eliminate parallel bottlenecks.
+  Many design patterns, tailored to different kinds of situations.
+
+Today's focus: read-heavy data structures.
+
+Example: singly-linked list.
+  E.g. list of processes; of VMAs; of cached blocks; &c.
+  Each element has data, e.g. a short string, and a next pointer.
+  Global variable with pointer to first element.
+  Assume most uses are reads that scan the list.
+  Occasional writers add element; delete element; change string in element.
+
+xv6 would require list readers and writers to acquire a spin-lock.
+  Safe, but no parallelism even when all threads are read-only.
+  Can we have a lock that allows parallel reads?
+
+Read/write lock API.
+  r_lock(l) / r_unlock(l)
+  w_lock(l) / w_unlock(l)
+  Semantics: either
+    One writer, no readers or other writers; or
+    Lots of readers, no writers.
+
+Here's a simplified version of Linux's read/write lock.
+struct rwlock { int n; };
+  n=0  -> not locked
+  n=-1 -> locked by a writer
+  n>0  -> locked by n readers
+r_lock(l):
+  while 1:
+    x = l->n
+    if x < 0
+      continue
+    if CAS(&l->n, x, x + 1)
+      return
+CAS(p, a, b) is atomic compare-and-swap instruction
+  if *p == a, set *p = b, return true
+  else return false
+w_lock(l):
+  while 1:
+    if CAS(&l->n, 0, -1)
+      return
+
+Not so great if r_lock() is called a lot on many cores:
+  Every core's CAS waits for cache miss on l->n.
+  Every core broadcasts invalidations when its CAS writes l->n.
+Disappointing:
+  The list read by itself is probably a few dozen cycles, if cached.
+    Even if lots of cores are reading.
+  But the r/w lock can take 100s or 1000s of cycles, if it's popular.
+
+Can we have pure read-only reads of shared read-write data?
+  I.e. read without even doing the writes involved in locking?
+
+What goes wrong if readers read the list without locking?
+  And a writer holds an ordinary spin-lock while writing?
+  [list diagram, with string in each entry]
+  Nothing goes wrong if there's no writer.
+  If there is a concurrent writer?
+    1. Modifying the string in a list element?
+    2. Inserting a new list element?
+    3. Deleting an element?
+
+So it doesn't work for readers to simply not lock.
+  But the specific problems can be fixed!
+  That's what RCU does.
+
+Read-Copy Update (RCU).
+  Allows reads w/o synchronization cost (for readers).
+  Hurts writers: they need to lock, and do more work.
+  Helps many situations with read-heavy shared data, but not all.
+  Used extensively in Linux, a big part of its multi-core performance.
+
+RCU idea 1: don't modify data in place; prepare a new copy.
+  Head  ->  E1  ->  E2  ->  E3  ->  nil
+  Suppose writer wants to modify the string in E2->x.
+  1. Lock
+  2. E2a = alloc()
+  3. *E2a = *E2
+  4. Modify E2a->x
+  5. E1->next = E2a
+  6. Unlock
+  What about a reader on another core traversing the list?
+    At some point reader will read E1->next.
+    Either before or after step 5 (this is a simplification, see below).
+    If before, reader sees unmodified E2 and original string.
+    If after, reader sees new E2a and new string.
+  The point: the reader won't see a partially updated string.
+
+A good way to think about this idea:
+  Step 5 is a "committing write".
+  Before step 5, it's as if nothing changed.
+  After step 5, all changes are made visible.
+  RCU is best suited to data structures where a single pointer write commits.
+    E.g. lists and trees.
+
+RCU idea 2: readers and writers must use memory barriers to enforce order.
+  We don't want compiler or machine to move some of step 4 after step 5.
+  And we don't want reader to see new E1->next but stale E2a->x.
+  Writer must have a barrier just before step 5.
+  Reader needs a barrier between Rx = E1->next,
+    and dereference of Rx to read element contents.
+
+What if a writer needs to free a list element?
+  Either after Step 6 in element update.
+  Or at the end of a real delete, after changing predecessor pointer.
+  The problem: a reader might be looking at the element to be deleted.
+  Writer needs to give readers a "grace period" to finish.
+    After it removes the visible reference to the element.
+    But how long should the writer wait?
+  Reference counts (or GC) solve this problem, but they are expensive.
+
+We want a contract that allows writer to be sure reader has given up pointer.
+  Must require zero work for reader.
+  OK if it requires effort from writer.
+  So: the rule is that readers can't hold pointers to RCU-protected
+      data across context switches.
+      I.e. yield() or sleep() (or anything that calls them).
+  Acceptable since this is data that would otherwise be spin-locked,
+    and kernels don't hold spin-locks across yield or sleep.
+
+RCU idea 3: writer defers free until all CPUs have context-switched.
+  This may take a few milliseconds, but the assumption is that writes are rare.
+  The point: by that time, any reader who might have seen the old
+    pointer must also have stopped using it, since it has context
+    switched.
+  How to do this?
+    Simple plan: writer forces itself to be scheduled on each CPU.
+    (There are more efficient implementations.)
+
+Linux RCU interface for readers:
+  rcu_read_lock()
+  rcu_read_unlock()
+  rcu_dereference(p)
+For writers:
+  rcu_assign_pointer(pa, p)
+  synchronize_rcu()
+  call_rcu(fn,x)
+
+rcu_read_lock/unlock do almost nothing.
+  Disable timer interrupts to prevent pre-emption.
+  Since context switch implies done with RCU objects.
+
+synchronize_rcu() can take a long time, and can yield the CPU.
+call_rcu(fn,x) returns immediately; adds <fn,c> to a list.
+
+List reader using Linux's RCU interface:
+  rcu_read_lock()
+  p = head
+  while(p){
+    p = rcu_dereference(p)
+    if p->...:
+       use p->...
+       break
+    p = p->next
+  }
+  rcu_read_unlock()
+
+Note: code has to use list element inside rcu_read_lock/unlock!
+  Cannot return it, or install it in a long-lived data structure.
+
+Code to modify a list element:
+  Can't modify in place -- construct a replacement.
+  acquire(list lock)
+  prev = ...
+  old = prev->next
+  q = alloc()
+  q->x = ...
+  q->next = old->next
+  rcu_assign_pointer(&prev->next, q)
+  release(list lock)
+  synchronize_rcu()
+  free(old)
+   
+RCU performance versus r/w locks?
+  For readers:
+    RCU imposes zero cost on reads.
+    r/w locks might take 100s or 1000s of cycles (Figure 5, upper line).
+    Also, RCU can read while a write is in progress!
+  For writers:
+    RCU can take much longer due to synchronize_rcu().
+    So RCU makes sense when writes are rare or non-time-sensitive.
+
+Example: removing NMI handler; paper's Section 4.1; Figure 4.
+  NMIs are interrupts that cannot be disabled.
+    Used for CPU profiling, critical hardware errors, watchdog timer.
+  Kernel code can register handlers to be called during NMI.
+  Can also un-register handler, and free memory containing code.
+  NMIs are frequent; register/unregister is rare; thus reads >> writes.
+  What if some core is in NMI code when un-register is called?
+  Figure 4's solution, in unregister_nmi_handler():
+    1. Delete NMI handler list entry (so future interrupts won't see it).
+    2. synchronize_rcu() to wait for all current interrupts to complete.
+       Since a core won't context-switch until it has left interrupt.
+    3. (not shown) free the memory holding NMI handler code.
+  This example uses RCU to defer free until all uses have finished.
+  An interesting wrinkle:
+    NMI cannot be disabled.
+    So spinlocks can't prevent NMIs.
+    So NMIs cannot generally be allowed to acquire locks (deadlock...).
+    So here RCU is not just faster than locking for reader,
+      but actually works where locking would not.
+
+Example: IP options; Section 4.2; Figure 6.
+  IP packet header can contain options (e.g. record route).
+  Kernel socket has (optional) options, copied into every outgoing packet.
+  Send code (udp_sendmsg()) copies socket options w/o lock.
+  Options are read much more often than written -> good RCU candidate.
+  setsockopt() defers free of superseded options with call_rcu(kfree,old).
+  Today's paper question:
+    Why is the reading code safe?
+    1. Writer entirely prepares new option before publishing pointer.
+    2. Writer and reader use memory barriers.
+    3. Writer defers free until any reader of old must have finished.
+  The paper calls this "reference counting" but there's no reference count.
+    "Garbage collection" might be a better term,
+    since the goal is to free after last reference disppears.
+  
+RCU is not universally applicable.
+  Only improves performance when reads >> writes.
+  Doesn't work for code that must hold references across yield/sleep.
+    Much like spinlocks.
+  Doesn't work if data structure not amenable to single committing write.
+    E.g. if readers scan both directions of doubly-linked list.
+    Or if in-place updates are required.
+  Readers can see stale data.
+    E.g. udp_sendmsg() in Figure 6 might send with old IP options.
+    But only if concurrent with setsockopt().
+    Not a problem here; may be in a few cases (paper mentions Sys V IPC).
+  RCU adds complexity to writers.
+    Search the web for "review checklist for RCU patches"
+  RCU needs context switches to be frequent, and it needs to know about them.
+    Easy in the kernel, harder for user-space threads.
+
+Can synchronize_rcu() be more efficient than "schedule on each CPU"?
+  Here's one of the designs from
+    http://www2.rdrop.com/users/paulmck/RCU/rclockpdcsproof.pdf
+  Per-core data:
+    Count of this core's context switches.
+    List of waiting synchronize_rcu() and call_rcu().
+  Periodically, each core processes a whole batch (list) of RCU writers:
+    Save the list, empty it.
+    Read all other cores' counts.
+    Every context switch, look again at other cores' counts.
+    If all have changed, wakeup / run everything on saved list.
+
+What if you have shared write-heavy data?
+  Best: re-design for no sharing.
+  Second best: semi-private per-core partitions.
+  Example: kalloc in locking lab.
+  Example: Linux per-core scheduling lists.
+  Example: statistics counters.
+    Each core keeps its own count, under a separate spin lock.
+    To write, acquire local lock, increment local count.
+      A spin lock is cheap if it's only used from one core.
+    To read, acquire *all* locks, read and sum all counts.
+      Expensive but we're assuming write-heavy.
+  
+RCU summary
+  Very successful at speeding up read access to shared kernel data.
+    Used all over modern Linux.
+  Totally eliminates locking cost for readers.
+  Allows readers to execute in parallel with a writer.
+  Key idea is a GC-like grace period to defer freeing objects.

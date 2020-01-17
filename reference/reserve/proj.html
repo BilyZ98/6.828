@@ -1,0 +1,88 @@
+<head>
+<title>Project</title>
+<link rel="stylesheet" href="../labs.css" type="text/css" />
+<script type="text/javascript" src="../labs.js"></script>
+</head>
+
+<body>
+
+<p>If you are taking 6.828, you must do a project in a team of two to
+pass 6.828.  Some ideas for projects are below.  The deadlines for
+the project are as follows:
+<ul>
+<li> Email idea to staff: Due, September 19, 2019 <br>
+<li> Email proposal to staff: Due, October 3, 2019 <br>
+<li> Email project status update: Due, October 31, 2019 <br>
+<li> Email project status update: Due, November 14, 2019 <br>
+<li> Code repository and short report Due, December 6, 2019 <br>
+<li> Check-off and in-class demos, Week of December 9, 2019<br>
+</ul>
+
+<h2>Project ideas</h2>
+
+<ul>
+
+<li> Build a virtual machine monitor that can run multiple guests (for
+example, multiple instances of xv6), using trap-and-emulate.
+
+<li> Make the xv6 file system implement high-performance logging in
+  the spirit of of Linux EXT3.
+
+<li> Use file system ideas
+from <a href="https://ng.gnunet.org/sites/default/files/10.1.1.40.3691.pdf">WAFL</a>,
+ZFS, or another advanced file system.  For example, add file system as
+it appeared at various points in the past.  You'll probably want to
+use some kind of copy-on-write for disk storage to keep space
+consumption down.
+
+<li> Build a
+<a href="http://www.cdf.toronto.edu/~csc469h/fall/handouts/nitzberg91.pdf">distributed shared memory</a> (DSM) system, so that you can run
+multi-threaded shared memory parallel programs on a cluster of
+machines, using paging to give the appearance of real shared memory.
+When a thread tries to access a page that's on another machine, the
+page fault will give the DSM system a chance to fetch the page over
+the network from whatever machine currently stores it.
+
+<li> Allow processes to migrate from one machine to another over the
+network. You'll need to do something about the various pieces of a process's
+state in the kernel.
+
+<li>Implement containers for xv6.
+
+<li>Use <a
+ href="http://static.usenix.org/event/osdi06/tech/erlingsson.html">xfi</a> to
+sandbox code within a process.
+
+<li>Modify xv6 to have kernel-supported threads inside processes.
+  Implementing scheduler activations would be one way to do this
+  project.
+
+<li>Implement ideas from
+  the <a href="http://pdos.csail.mit.edu/6.828/2018/readings/engler95exokernel.pdf">Exokernel
+  papers</a> in xv6, for example the packet filter and a user-level
+  network stack.
+
+<li>A window system for xv6, including graphics driver and mouse.
+
+<li>Make xv6 runs on real RISC-V hardware and do something cool with it.
+
+<li>Implement dynamic linking on xv6 and use it in interesting ways.
+
+<li>Implement TCP/IP for xv6.
+
+<li>Implement address space randomization for xv6.
+
+<li>Implement side-channel mitigation techniques in xv6.
+
+<li>Do something substantive in Linux.  For example, implement
+  sv6's refcache and radixvm in Linux.
+
+<li>Port Biscuit work to RISC-V.
+
+<li>Rewrite xv6 (or parts of it) in Rust.
+
+<li>Kernel pcqrofiler for xv6
+
+</ul>
+</body>
+</html>

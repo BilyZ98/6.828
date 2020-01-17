@@ -1,0 +1,277 @@
+6.S081/6.828 2019 L16: Operating System Organization
+
+Topic:
+  What should a kernel do?
+  What should its abstractions / system calls look like?
+  Three examples today: UNIX, microkernel, exokernel.
+
+Answers depend on the application, and on programmer taste!
+  There is no single best answer
+  But plenty of ideas, opinions, and debates
+    We'll see some in the papers over the rest of the term
+  This topic is more about ideas and less about specific mechanisms
+
+The traditional approach
+  1) big abstractions, and
+  2) a "monolithic" kernel implementation
+  UNIX, Linux, xv6
+
+Example: traditional treatment of CPU
+  each process has its own "virtual" CPU
+  kernel hides multiplexing
+  implications:
+    interrupts must save/restore all registers for transparency
+    timer interrupts force transparent context switches
+  maybe good: simple, many irritating details abstracted away
+  maybe bad: applications may want to control scheduling, know about switches
+             might be slow
+
+Example: traditional treatment of memory
+  each process has its own address space
+  kernel hides other processes' memory, physical addresses, MMU, page faults
+  maybe good:
+    no need to worry about other process's use of memory
+    no need to worry about security, since private
+    kernel has great freedom to play clever virtual memory tricks
+  maybe bad:
+    limits application-level VM tricks, as in Appel+Li
+
+The philosophy behind traditional kernels is abstraction:
+  portable interfaces
+    files, not disk controller registers
+    address spaces, not MMU access
+  simple interfaces, hidden complexity
+    all I/O via FDs and read/write, not specialized for each device &c
+    address spaces with transparent disk paging
+  abstractions help the kernel manage resources
+    process abstraction lets kernel be in charge of scheduling
+    file/directory abstraction lets kernel be in charge of disk layout
+  abstractions help the kernel enforce security
+    file permissions
+    processes with private address spaces
+  lots of indirection
+    e.g. FDs, virtual addresses, file names, PIDs
+    helps kernel virtualize, hide, revoke, schedule, &c
+
+Abstractions are a win for app developer convenience
+  app developers want to spend time building new application features
+  they want the O/S to deal with everything else
+  so they want power and portability and reasonable speed
+
+What's wrong with traditional kernels?
+  big => complex => maybe buggy
+  abstractions may be over-general and thus slow
+    maybe I don't need all my registers saved on a context switch
+  abstractions are sometimes awkward
+    maybe I want to wait for a process that's not my child
+  abstractions can hinder app-level optimizations
+    DB may be better at laying out B-Tree files on disk than kernel FS
+
+Microkernels -- an alternate approach
+  big idea: move most O/S functionality to user-space service processes
+  kernel can be small, mostly IPC
+  [diagram: h/w, kernel, services (FS VM net), apps]
+  the hope:
+    simple kernel can be fast and reliable
+    services are easier to replace and customize
+  Examples: Mach 3, L3
+
+Microkernel strengths:
+  IPC can be made very fast
+  fast IPC is great for new user-level services, e.g. X server
+  separate service processes force O/S modularity
+
+Microkernel weaknesses:
+  kernel can't be tiny: needs to know about processes and memory
+  you may need lots of IPCs, slow in aggregate
+  it's painful to split the kernel into lots of service processes!
+    splitting makes cross-service optimization hard
+    so server processes tend to be big, not a huge win
+
+Microkernels have seen some success
+  IPC/service idea widely used in e.g. macOS
+    but not much for traditionional kernel services
+    mostly for (lots of) new services, designed to be client/server
+  some embedded O/Ses have strong microkernel flavor
+
+Exokernel (1995)
+
+the paper:
+  full of interesting ideas
+  O/S community paid lots of attention
+  describes an early research prototype
+  later SOSP 1997 paper realizes more of the vision
+
+Exokernel overview
+  philosophy: eliminate all abstractions
+    expose h/w, let app do what it wants
+  [ h/w, kernel, environments, libOSes ]
+  an exokernel would not provide address space, pipes, file system, TCP
+  instead, let apps use MMU, phys mem, NIC, timer interrupts
+    not portable -- but lots of app control
+  per-app libOS implements abstractions
+    perhaps POSIX address spaces, fork, file system, TCP, &c
+    each app can have its own custom libOS and its own abstractions
+  why?
+    kernel may be faster due to streamlining, simplicity
+    apps may be faster due to customized libOS, access to h/w
+
+Exokernel challenges:
+  what resources should kernel expose?
+    what does a libOS need in order to implement fork, pipes, &c?
+  can low-level access to hardware resources be secure?
+  can libOSes share? securely?
+    e.g. pipes, files, wait/exit, &c
+    can't be too customized!
+    can libOS enforce security on shared abstractions?
+  will many apps be able to benefit from custom libOSes?
+
+Exokernel memory interface
+  what are the resources?
+    kernel exposes physical pages and VA->PA MMU mappings
+  what's the app->kernel system call interface?
+    pa = AllocPage() -- user code sees physical addresses!
+    TLBwr(va, pa, PTE flags) -- can set up any mapping! e.g. map twice.
+    Grant(env, pa)  -- to share memory with other processes
+    DeallocPage(pa)
+  and these kernel->app upcalls (like in the alarm lab):
+    PageFault(va)
+    ReleaseMemory()
+  what does exokernel need to do?
+    track what env owns what phys pages
+    ensure app only creates mappings to phys pages it owns
+    decide which app to ask to give up a phys page when system runs out
+      that app gets to decide which of its pages
+      perhaps cached data; perhaps first save page to disk
+      
+typical use of VM calls
+  lazy page allocation for some range of addresses, as in the Lab
+  exokernel allows user-level implementation!
+  PageFault(va):
+    if va in range:
+      pa = AllocPage()
+      TLBwr(va, pa)
+      jump to faulting PC
+    else:
+      oops
+
+A cool thing you could do w/ exokernel-style memory
+  databases like to keep a cache of disk pages in memory
+  [diagram: DB process w/ cache, DB on disk, swap area on disk]
+  problem on traditional OS:
+    assume an OS with demand-paging to/from disk
+    if DB caches some data, and OS needs a phys page,
+      OS may page-out a DB page holding a cached disk block
+    but that's a waste of time: if DB knew, it could release phys
+      page w/o writing, and later read it back from DB file (not paging area)
+  1. exokernel needs phys mem for some other app
+  2. exokernel sends DB a PleaseReleaseMemory() upcall
+  3. DB picks a clean page, calls DeallocPage(pa)
+  4. OR DB picks dirty page, saves to DB file, then DeallocPage(pa)
+
+Exokernel page fault up-calls are very fast
+  (remember slow page faults were a complaint in Appel+Li)
+  kernel trap handler is simple when dispatching back to user space
+    save PC and a few registers in user-accessible memory
+    decide what kind of trap
+    return to user space handler
+    user handler can continue without re-entering kernel (jump to saved PC)
+  things the exokernel trap handler does *not* do that xv6 does:
+    on entry:
+      save all 32 registers
+      switch page table
+      set up kernel stack
+    on return:
+      restore 32 registers
+      switch page table
+  why exokernel trap dispatch can be so simple:
+    kernel handler doesn't use most of the registers; preserves user values
+    kernel runs with physical addressing, no MMU
+  trap dispatch speed is a big factor in the paper's measurement results
+    
+Exokernel CPU interface
+  *not* transparent process switching; instead:
+    kernel upcall to app when it gives CPU to app
+    kernel upcall to app when it is taking away CPU
+    (these are upcalls to fixed app locations, not transparent resume)
+  so if app is running and timer interrupt causes end of slice
+    [diagram]
+    CPU interrupts from app into kernel
+    kernel jumps back into app at "please yield" upcall
+    app saves registers
+    app calls Yield()
+  when kernel decides to resume app
+    kernel jumps into app at "resume" upcall
+    app restores saved registers, jumps to saved PC
+
+A cool thing an app can do with exokernel CPU management
+  suppose timer interrupt occurs in the middle of
+    acquire(lock);
+    ...
+    release(lock);
+  you don't want the app to hold the lock despite not running!
+    then maybe other apps can't make forward progress
+  so the "please yield" upcall can first complete the critical section
+
+Fast IPC
+  process P1 wants to send msg to P2, get reply
+  IPC on traditional kernel
+    pipes (or sockets)
+    a message / communication abstraction
+    picture: two buffers in kernel
+    slow:
+      write+read + read+write -- 8 crossings
+      8 crossings (w/ register save/restore)
+      two blocking calls (sleep+scheduler+wakeup)
+  IPC on Aegis kernel
+    Yield() can take a target process argument
+      kernel up-calls into the target
+      almost a direct jump to an instruction in target process
+      entry address specified by target, not sender
+    kernel leaves regs alone, so can contain arguments + return value
+    target app uses Yield() to return
+    fast: 4 crossings, little save/restore, no blocking read(), no sched
+  note IPC execution just appears in the target!
+    *not* a return from read() or ipc_recv()
+
+summary of low-level performance ideas
+  pick apart big abstractions into small ops that apps can combine in new ways
+  mostly about fast system calls, traps, and upcalls
+    system call speed can be very important!
+    slowness encourages complex system calls, discourages frequent calls
+  trap path doesn't save most registers
+  fast upcalls to user space (no need for kern to restore regs)
+  protected call for IPC (just jump to known address; no pipe or send/recv)
+  map some kernel structures into user space (pg tbl, reg save, ...)
+
+bigger ideas -- mostly about abstractions
+  custom abstractions are a win for performance
+    apps need low-level operations for this to work
+  much of kernel can be implemented at user-level
+    while preserving sharing and security
+    very surprising
+  protection does *not* require kernel to implement big abstractions
+    e.g. can protect process pages w/o kernel managing address spaces
+    1997 paper develops this fully for file systems
+  address space abstraction can be decomposed
+    into phys page allocation and va->pa mappings
+
+what happened to the exokernel?
+  people don't use exokernels
+  but...
+
+first, a word about expectations
+  Exokernel was a research project
+  research success takes the form of influence
+    change how people think
+    help them see new possibilities
+    perhaps they'll borrow specific ideas
+  research success is not the same as having lots of users!
+    it's rare for research to turn into products
+    even if the research is good
+
+lasting influence from the exokernel:
+  UNIX gives much more low-level control than it did in 1995
+    very important for some applications
+  people think a lot about kernel extensibility now, e.g. kernel modules
+  library operating systems are often used, e.g. in unikernels

@@ -1,0 +1,117 @@
+Q: Does Linux use scalable locks?
+
+Yes. Linux uses MCS locks in its mutex-lock implementation and
+qspinlocks (which also uses MCS underneath) to implement spinlocks.
+See discussion below for more details.
+
+Q: Does performance collapse occur in real life?
+
+A: Yes. Scalability bottlenecks have been demonstrated in real-life
+deployments of Linux, and the Linux community has worked hard for
+years and fixed many of them.
+
+Q: Given that ticket and spin locks can hurt performance so much, why
+does anyone use them at all?
+
+A: If a particular lock rarely experiences contention, it won't hurt
+performance much, and (under low contention) ticket locks are faster
+than scalable locks and have a simpler API. If a lock is contended,
+that typically signals that there is a deeper problem with the kernel
+subsystem that uses the lock. Typically it means that the subsystem
+has a scalability problem, and kernel developers should redesign the
+subsystem to allow more parallelism.
+
+Q: Why are they called "scalable" locks?
+
+A: They are scalable in the sense that the number of cache coherence
+protocol messages required to do a single release of the lock stays
+constant even as the number of contending cores grow. In contrast, the
+cost of a single release of a spinlock or ticket lock grows linearly
+with the number of contending cores. "Scalable" does not, however,
+imply overall high performance, since a scalable lock still enforces
+serial execution of the critical section. A better name would have
+been "non-collapsing" locks.
+
+Q: At what level is cache-coherence implemented?
+
+A: Processors implement cache coherence in hardware. Each cache has a
+cache controller implemented in hardware, which sends and receives
+cache-coherence messages over the interconnect that connects the cache
+controllers. Cache-coherence is transparent to software.
+
+Q: Multi-processor computers have been around for 50 years. Why were
+scalable locks still a point of debate as recently as 2012, when this
+paper was published?
+
+Until about 10 years ago parallelism in mainstream kernels wasn't very
+important, because most machines had only one processor. Around 2001
+it became impossible to make uniprocessors with faster clock rates,
+but transistors per chip kept growing, so manufacturers started
+putting multiple cores into most CPU chips. At that point, parallelism
+became important for most computers. Initially these machines had a
+small number of cores so coarse-grain parallelism was sufficient but
+today many machines have a dozen or several dozens of cores. Now
+fine-grained parallelism is important.
+
+Q: How do MCS locks work?
+
+The key idea is that each core spins on its own cache-line so that a
+lock release takes O(1) time because only one core is spinning on the
+line that is modified by the releasing core. You can find MCS code
+here (towards the end of the file):
+
+https://pdos.csail.mit.edu/6.828/2016/lec/scalable-lock-code.c
+
+Q: Are there properties of locks other than scalability that are
+important?
+
+A: Other metrics of importance are: memory use (scalable locks
+typically use more memory than spinlocks), cost of acquiring/releasing
+when there is no contention (scalable locks are a bit more expensive),
+and the simplicity of the API (scalable locks have a more complicated
+API).
+
+Q: Why does the paper say that it's hard to change the Linux directory
+cache code to use MCS locks?
+
+A: The main reason is that the APIs for ticket locks and MCS locks are
+different. The MCS acquire and release take an extra argument: a Q
+node (a small struct) on which the acquires wait. To avoid the expense
+of allocating the Qnode with malloc/free, the MCS modifications to the
+directory cache try to allocate the qnode on the stack, which is more
+efficient. This makes the directory cache modifications a bit tricky.
+For example, in the directory cache code the acquire and the release
+call may not be in the same function. The modifications resolve this
+problem by stack-allocating the Q node in the function that calls the
+functions that call acquire and release, and modifying functions to
+pass the qnode along. Since Q nodes don't exist in the ticket lock API
+such changes are unnecessary for ticket locks.
+
+other
+edit·good note0Updated 8 days ago by Srivatsa S. Bhat and Robert Morris
+followup discussionsfor lingering questions and comments
+Resolved   Unresolved
+Srivatsa S. Bhat
+ Srivatsa S. Bhat 8 days ago
+Update: It turns out that the Linux kernel has been using scalable (or non-collapsing) locks for quite some time now. One of the earliest efforts to fix the performance of ticket-based spinlocks dates back to 2013[1], and appears to have used the paper we read today as motivation. (But that particular patchset never actually made it to the mainline kernel). MCS locks found their way into the mutex-lock implementation at around the same time[2].
+ 
+However, replacing ticket-spinlocks with scalable locks turned out to be a much harder problem because locking schemes such as MCS would bloat the size of each spin-lock, which was undesirable due to additional constraints on the spin-lock size in the Linux kernel. A few years later, the Linux developers came up with “qspinlocks” (which use MCS underneath, with special tricks to avoid bloating the size of the spin-lock) to replace ticket-spinlocks, which is now the default spin-lock implementation in the Linux kernel since 2015[3][4]. You may also find this article[5] (written by one of the contributors to the Linux locking subsystem) quite interesting in this context. Finally, the old and unused ticket-spinlock implementation was deleted from the codebase in 2016[6].
+ 
+[1]. Fixing ticket-spinlocks:
+      https://lwn.net/Articles/531254/
+      https://lwn.net/Articles/530458/
+ 
+[2]. MCS locks used in the mutex-lock implementation:
+      http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=2bd2c92cf07cc4a
+ 
+[3]. MCS locks and qspinlocks:
+      https://lwn.net/Articles/590243/
+ 
+[4]. qspinlock (using MCS underneath) as the default spin-lock implementation:
+      http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=a33fda35e3a765
+ 
+[5]. Article providing context and motivation for various locking schemes:
+      http://queue.acm.org/detail.cfm?id=2698990
+ 
+[6]. Removal of unused ticket-spinlock code from the Linux kernel:
+      http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=cfd8983f03c7b2
