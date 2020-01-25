@@ -50,3 +50,137 @@ kernel page table: 0x87fff000
 ![](img/Screenshot_20191201_204040.png)
 before and after (a new page allocated)
 ![](img/Screenshot_20191201_204526.png)
+
+## lec7
+### traps in xv6
+1. system call: ecall
+2. exceptions: illegal instruction
+3. interrupt: device
+4. (timer interrupt)
+
+### sec2
+note: no nested kernel trap,  
+i.e., once in `kernelvec` or `kerneltrap`, no another kernel trap
+result: unless it calls `yield`, it must panic or return
+
+```
+It’s worth thinking through how the trap return happens if kerneltrap called yield due to
+a timer interrupt.
+```
+what happens:
+1. `yield()` change current proc's state to `RUNNABLE`, then call `sched()`
+2. `sched()` call `swtch()` to save context and then switch to scheduler
+3. In *swtch.S*: see how `swtch()` save context
+4. previously in `kerneltrap()`: already save sepc and other things in the context(s0, ...); also can see in *kernel.asm*: 
+```
+00000000800026ba <kerneltrap>:
+{
+    800026ba:	7179                	addi	sp,sp,-48
+    800026bc:	f406                	sd	ra,40(sp)
+    800026be:	f022                	sd	s0,32(sp)
+    800026c0:	ec26                	sd	s1,24(sp)
+    800026c2:	e84a                	sd	s2,16(sp)
+    800026c4:	e44e                	sd	s3,8(sp)
+    800026c6:	1800                	addi	s0,sp,48
+...
+```
+
+### sec3
+!important: `ecall` => In trampoline.S: supervisor mode with no kernel page table.  
+Without `ecall`, although user process can access kernel page from p->tf,  
+it cannot use csr instruction to change `satp`.
+
+### sec8
+how does the kernel initialize `console` or how does `open("console")` work in *init.c*?  
+how `read` system call make their way through the kernel to `consoleread`?
+
+### sec9
+```
+However, the need for kernel code to be mindful that it might be suspended (due to
+a timer interrupt) and later resume on a different CPU is the source of some complexity in xv6.
+The kernel could be made somewhat simpler if device and timer interrupts only occurred while
+executing user code.
+```
+
+### ch4 exercises, possible method
+1. uartputc (kernel/uart.c:61) polls the UART device to wait for it to finish with the previous  
+output character. Convert it to use interrupts instead.  
+sol: reference `uartgetc` for example  
+* first, enable transmitter empty interrupt - hardware config
+```
+The Interrupt Enable Register (IER) masks the incoming interrupts from receiver ready, transmitter empty, line status and modem status registers to the INT output pin.
+
+IER BIT-0:
+0=disable the receiver ready interrupt.
+1=enable the receiver ready interrupt.
+
+IER BIT-1:
+0=disable the transmitter empty interrupt.
+1=enable the transmitter empty interrupt.
+```
+* second, modify `consolewrite()` referencing `consoleread()` in *console.c* - process-level code
+* third, add handler code in `devintr()` and `uartintr()` - handler-level code
+2. Add a driver for an Ethernet card... kidding me! 
+
+## lec9
+### multi-taksing programs architecture
+from lec note:
+```
+There are two main approaches to multi-tasking:
+  Threads: program execution appears sequential.
+  Events: programs are driven by arrival of events, like interrupts.
+```
+
+from [Stefan Hajnoczi's blog](http://blog.vmsplice.net/2011/03/qemu-internals-overall-architecture-and.html):
+```
+There are two popular architectures for programs that need to respond to events from multiple sources:
+1. Parallel architecture splits work into processes or threads that can execute simultaneously.
+    I will call this threaded architecture.
+2. Event-driven architecture reacts to events by running a main loop that dispatches to event handlers.
+    This is commonly implemented using the select(2) or poll(2) family of system calls to wait on multiple file descriptors.
+```
+
+### cannot find user/spin.c
+
+### lock interaction between kernel thread and scheduler thread
+```
+remember sched() acquired the process's lock
+  now scheduler releases it
+  it may *look* like scheduler aquires then releases
+    but in fact scheduler acquires, yield releases
+    an yield acquires, scheduler releases
+  unusual: the lock is released by a different thread than acquired it!
+```
+
+### proc's lock
+```
+p->lock protects multiple invariants:
+  (invariant = true when p->lock not held, maybe not true if held)
+  if RUNNING, CPU registers hold the values (not in p->context)
+  if RUNNABLE, p->context holds its saved registers
+  if RUNNABLE, no CPU is using its stack
+  holding p->lock from yield() all the way to scheduler enforces:
+    another CPU can't execute p until after this CPU stops using its stack
+    interrupts off, so no nested yield()+swtch() during swtch() save/restore
+```
+
+## lec10
+### why sleep should be wrapped in a loop - sec6
+cauz multiple process might `sleep` on the same condition,    
+`wakeup` wakes them all up,  
+so only one process should `acquire` the condition lock,  
+and others should `sleep` again(i.e. `sleep` in a loop)
+
+### sec8 - Code: Wait, exit, and kill
+detail of `exit`:
+1. why `wakeup1(initproc)`  
+  Need to `acquire(&initproc->lock)`, so this `wakeup1` should be called before any other
+  proc->lock being acquired(otherwise, we violate the lock other).  
+  Note: initproc might miss the forth-coming zombie children that is reparented to it, so adding/removing `wakeup1(initproc)` here seems harmless.
+2. can't understand why `grab a copy of p->parent`  
+  `p->parent` could its origin parent or initproc,  
+  so before accessing it we should lock p.
+3. `p`(i.e. child) set its state to `ZOMBIE` then release parent's lock  
+  + `parent` is waken, but it cannot be scheduled before `child` release parent's lock
+  + `parent` might be executing `wait`, but it not check if its children's states are `ZOMBIE` before  
+    the exiting `child` calls `sched` and then `scheduler thread` release `child`'s lock

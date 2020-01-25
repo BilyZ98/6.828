@@ -1,0 +1,304 @@
+6.S081/6.828 2019 Lecture 10: Coordination (sleep&wakeup)
+
+# plan
+  finish context switch
+  sequence coordination
+    sleep & wakeup
+    lost wakeup problem
+  termination
+
+*********
+
+let's pick up where we left off in thread context switch.
+two "spin" processes, but only one CPU
+  pre-emptive switching via timer interrupts
+diagram:
+  kernel thread per process, to execute system calls and interrupts
+    trapframe; stack; context
+  scheduler thread (stack and context)
+the kernel is itself a parallel program, with threads,
+  shared memory, and locks
+on each CPU, exactly one thread is running
+  either that CPU's scheduler, or a process (kernel or user)
+process-to-process switch occurs via intermediate scheduler thread
+  why?
+  a yielding thread needs to
+    p->state = RUNNABLE
+    swtch() -- and stop using the stack
+  neither simple order works!
+    can't swtch first
+    another CPU may start running while stack is still in use
+  so yielding thread acquires p->lock, sets p->state = RUNNABLE, swtch()
+  scheduler releases p->lock 
+  other CPUs must lock first, so they can't see RUNNABLE
+    until after yielding thread is done with swtch()
+
+let's fast-forward into the scheduler thread
+
+make qemu-gdb
+$ spin
+control-B
+(gdb) tb swtch
+(gdb) c
+(gdb) where
+(gdb) stepi 28
+(gdb) stepi
+
+scheduler()'s loop looks at all processes, finds a RUNNABLE one
+  will likely be the *other* spin process
+locks the new process, sets state to RUNNING, calls swtch()
+  one reason for lock is to prevent other CPUs' schedulers from running it
+
+(gdb) tb swtch
+(gdb) c
+
+now we're swtch()ing from the scheduler() thread to the other "spin" process
+
+look at kernel/swtch.S (again)
+
+(gdb) stepi 28 -- now just about to execute swtch()'s ret
+(gdb) print $ra
+(gdb) where
+
+now we're resuming in a timer interrupt in the *other* spin process
+  at some point in the past, it yielded the CPU
+  and called swtch()
+  but now it will run again, and return to user space
+
+on a single-CPU machine, all but one thread are in swtch()
+  stack diagram
+   Th1     Sch     Th2
+   |        |      |
+            |      |
+           swtch   swtch
+when the running thread calls swtch, a *different* swtch returns
+
+Q: is there pre-emptive scheduling of kernel threads?
+   yes -- timer interrupt and yield() can occur while in kernel.
+   usertrap() calls intr_on() to enable interrupts in the kernel
+   kerneltrap() calls yield(), i.e. timer causes pre-emption
+   where to save registers of interrupted kernel code?
+     kernelvec.S pushes them on the kernel stack (since already in kernel).
+   is pre-emption in the kernel useful?
+     valuable if some system calls have lots of compute.
+     or if we need a strict notion of thread priority (this is hard).
+
+Q: what if timer interrupt while in scheduler's swtch()?
+   and then kerneltrap() calls yield()?
+   1. may save registers in the wrong context!
+      since cpus[i]->proc is set even though still running scheduler
+   2. will deadlock!
+      since p->lock is held during swtch(), but yield() needs it
+
+So: xv6 always turns off interrupts while a thread holds any spinlock
+  kernel/spinlock.c
+  acquire() disables
+  release() enables (if it's the outermost)
+  important for most device drivers
+    consoleread():
+      acquire(cons.lock)
+      look at cons.buf
+      release(cons.lock)
+    consoleintr():
+      acquire(cons.lock)
+      append to cons.buf
+      release(cons.lock)
+    what if console interrupt while consoleread() holds lock?
+    deadlock!
+  interrupts *can* still occur on other CPUs
+
+***********
+
+# new thread topic: sequence coordination
+  threads need to wait for specific events or conditions:
+    wait for disk read to complete (event is from an interrupt)
+    wait for pipe writer to produce data (event is from a thread)
+    wait for any child to exit
+
+# why not just have a while-loop that spins until event happens?
+
+# better solution: coordination primitives that yield the CPU
+  xv6 uses sleep & wakeup
+  there are others e.g. barriers, semaphores, event queues.
+
+# here's a BROKEN sleep/wakeup
+  sleep(chan)
+    sleeps on a "channel", a number/address
+      names the condition/event we are sleeping on
+    p->state = SLEEPING;
+    p->chan = chan;
+    sched();
+  wakeup(chan)
+    wakeup wakes up all threads sleeping on chan
+    may wake up more than one thread
+    for each p:
+      if p->state == SLEEPING && p->chan == chan:
+        p->state = RUNNABLE
+  flexible:
+    sleep/wakeup don't need to know what you're waiting for
+    no need to allocate explicit coordination objects
+
+# how would we use this (broken) sleep/wakeup?
+  disk_read():
+    buf->done = false
+    start(buf, block)
+    if(buf->done == false)
+      sleep(buf)
+  disk_intr():
+    buf->done = true
+    wakeup(buf)
+  buf is the sleep channel
+  buf->done==true is the "condition" we're waiting for.
+  (this is a classic top half / bottom half driver)
+
+# but what about locking?
+  - driver's data structures e.g. buf.done
+  - disk hardware
+  both disk_read() and disk_intr() need to hold a lock
+  should disk_read() hold a lock for the whole sequence?
+    no: then disk_interrupt() can't get lock and set done
+  maybe disk_read could release the lock before sleep()?
+  let's try it!
+    virtio_disk.c
+    stressfs
+
+what went wrong when disk_read released the lock before sleep()?
+  disk_read saw that request wasn't yet done
+  interrupt occurred after release, before sleep()
+  disk_read went to sleep EVEN THOUGH DISK WAS DONE
+  now there is nothing to wake up disk_read, it will block forever
+
+this is the "lost wakeup" problem.
+
+we need to eliminate that window between disk_read's check of
+  the condition, and sleep() marking the process as asleep.
+  we'll use locks to prevent wakeup() from running during the entire window.
+
+we need to change the sleep() interface and the way it's used.
+  sleep(chan, lock)
+    caller must hold lock
+    sleep releases lock, re-acquires before returning
+  wakeup(chan)
+    caller must hold lock
+  (edit virtio_disk.c)
+
+// caller must hold lock!
+sleep(chan, lock)
+  acquire(p->lock)
+  release(lock)
+  p->chan = chan
+  p->state = SLEEPING
+  sched()
+  release(p->lock)
+  acquire(lock)
+
+// caller must hold lock!
+wakeup(chan)
+  for p in procs:
+    acquire(p->lock)
+    if p->state == SLEEPING && p->chan = chan:
+      p->state = RUNNABLE
+    release(p->lock)
+
+why does this work?
+  sleeper holds condition lock (cl) OR p->lock OR both
+    from before check of condition until after marked as sleeping
+  waker holds BOTH condition lock and p->lock
+  diagram:
+    |----cl----|
+             |--- p->lock ---|
+                           |--------cl-------|
+                               |- p->lock -|
+  thus:
+    either complete sleep() sequence runs, then wakeup(),
+      and the sleeper will be woken up
+    or wakeup() runs first, before potential sleeper checks condition,
+      so sleeper will see that the condition is true
+  no lost wakeup!
+
+note that vdisk_read() wraps the sleep() in a loop
+  i.e. re-checks the condition after sleep() returns, may sleep again
+  multiple reasons:
+    maybe multiple waiters, another thread might have consumed the event
+    channels aren't guaranteed to be unique, they are just numbers
+    we'll see that kill wakes up processes even when condition isn't true
+  all uses of sleep are wrapped in a loop, so they re-check
+
+# Another example: piperead()
+  the condition is data waiting to be read (nread != nwrite)
+  pipewrite() calls wakeup() at the end
+  what is the race if piperead() used broken_sleep()?
+  do we really need the loop around sleep()? (yes!)
+  why the wakeup() at the end of piperead()?
+
+# the sleep/wakeup interface/rules are a little complex
+  there are other schemes that may be cleaner, faster, specialized, &c
+  semaphores, condition variables, wait queues
+  they all have to cope with lost wakeups, one way or another
+
+*************
+
+# another coordination challenge -- how to terminate a thread?
+  a puzzle in many threading systems, since we may need to free resources that
+    might still be in use
+  two cases: exit() and kill()
+
+# ordinary case: process voluntarily quits with exit() system call
+  danger: after p->state = UNUSED, another CPU may allocate it!
+    while it's still executing in exit(), on its stack
+    this is the same problem as yield faces with p->state = RUNNABLE
+    same solution:
+      exit() acquires p->lock, sets p->state=UNUSED, calls swtch
+      scheduler releases p->lock, after process stops executing
+  danger: can't free p->kstack while still in use!
+    solution:
+      xv6 doesn't free kernels stack: permanently associated with proc[i]
+    this would be a puzzle if we wanted to completely free processes
+    could have some other thread do it, e.g. parent or scheduler
+
+# how does kill(target_pid) work?
+  problem: may not be safe to forcibly terminate a process
+    it might be executing in the kernel
+      using its kernel stack, page table, proc[] entry
+    it might hold locks
+      and must finish to restore invariants
+      e.g. in the middle of fork()ing a new process
+    so: kill() can't directly destroy the target!
+  solution: 
+    kill() sets p->killed flag, nothing else
+    usertrap() checks p->killed before return, and exit()s
+      no locks are held at that point
+      so kill() doesn't disturb e.g. critical sections
+
+# what if kill() target is sleep()ing?
+  in that case it doesn't hold locks, and isn't executing!
+  in this case can kill() destroy it right away?
+  might be OK:
+    sleeping for console input
+  might not be OK:
+    might be waiting for disk midway through file creation
+
+# xv6 solution to kill() of sleep()ing process
+  see kill() in proc.c
+    changes SLEEPING to RUNNABLE -- like wakeup()
+    so sleep() will return, probably before condition is true
+  some sleep loops check for p->killed
+    e.g. piperead(), consoleread()
+    otherwise read could hang indefinitely for a killed process
+  some sleep loops don't check p->killed
+    e.g. virtio_disk.c
+    OK not to check p->killed since disk reads are pretty quick
+  so a kill()ed process may continue for a while
+    but usertrap() will exit() after the system call finishes
+
+# xv6 spec for kill
+  if target is in user space
+    will die next time it makes a system call or takes a timer interrupt
+  if target is in the kernel
+    target will never execute another user instruction
+    but may spend quite a while yet in the kernel
+
+# Summary
+  sleep/wakeup let threads wait for specific events
+  concurrency and interrupts mean we have to worry about lost wakeups
+  termination is a pain in threading systems
