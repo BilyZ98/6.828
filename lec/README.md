@@ -1,5 +1,7 @@
 # Lec Record
+
 ## lec4 - Isolation & system call entry/exit
+
 ### address shift problem  
 In xv6 book, section 2.8 Exercises have something different in my computer.  
 i.e., address `0x3ffffff07e` become `0x3ffffff10e` in my computer actually.  
@@ -26,6 +28,7 @@ in `usertrap` in *kernel/trap.c*
 solution: use `disas`, `break` and `continue`
 
 ## lec5 - Virtual memory (1)
+
 ### ld program
 To understand why and how *kernel.ld* provide
 `end` as address after the kernel data, that is used in
@@ -51,7 +54,8 @@ kernel page table: 0x87fff000
 before and after (a new page allocated)
 ![](img/Screenshot_20191201_204526.png)
 
-## lec7
+## lec7 - System calls, interrupts, exceptions
+
 ### traps in xv6
 1. system call: ecall
 2. exceptions: illegal instruction
@@ -122,7 +126,7 @@ IER BIT-1:
 * third, add handler code in `devintr()` and `uartintr()` - handler-level code
 2. Add a driver for an Ethernet card... kidding me! 
 
-## lec9
+## lec9 - Processes and switching
 ### multi-taksing programs architecture
 from lec note:
 ```
@@ -164,7 +168,8 @@ p->lock protects multiple invariants:
     interrupts off, so no nested yield()+swtch() during swtch() save/restore
 ```
 
-## lec10
+## lec10 - sleep&wakeup
+
 ### why sleep should be wrapped in a loop - sec6
 cauz multiple process might `sleep` on the same condition,    
 `wakeup` wakes them all up,  
@@ -184,3 +189,63 @@ detail of `exit`:
   + `parent` is waken, but it cannot be scheduled before `child` release parent's lock
   + `parent` might be executing `wait`, but it not check if its children's states are `ZOMBIE` before  
     the exiting `child` calls `sched` and then `scheduler thread` release `child`'s lock
+
+## lec12 - File systems
+
+### what happen after $ echo hi > x ?
+1.  sh encounters x, then call `open`(system call, corresponds to `sys_open`).
+2.  -- `sys_open`(*sysfile.c:301*) calls `create` to create an inode for file x.
+3.  ---- `create`(*sysfile.c:261*) calls `ialloc` to allocate an inode.
+4.  ---- `create`(*sysfile.c:278*) calls `dirlink` write diretory entry for x.
+5.  -- `sys_open`(*sysfile.c:325*) calls `filealloc`&`fdalloc` to create file and fd for x.
+6.  -- `sys_open`(*sysfile.c:325*) return x's fd to relevant user process.
+7.  echo uses `write(1, ...)`, sh uses redirection, i.e., `write` is called(corresponds to `sys_write`).
+8.  -- `sys_write`(*sysfile.c:91*) calls `filewrite` to write hi into the open file for x.
+9.  ---- `filewrite`(*file.c:164*) calls `writei` to write hi into the inode for x.
+10. ------ `writei`(*fs.c:498-505*) calls `bread`, `log_write`&`brelse` to write hi into the block for x.
+11. -------- `writei`(*fs.c:498*) calls `bmap` for block address, which may call `balloc` to alloc new block.
+12. ------ `writei`(*fs.c:514*) calls `iupdate` to update inode's content to disk.
+
+### what is in block 32, what is inode 0 used for ?
+sizeof(dinode) = 64B, BSIZE = 1024B, thus 16 inode per block.  
+xv6-riscv requires NINODES=200, thus 13 blocks are needed, i.e., block 32~44.  
+
+[just for reservation](https://stackoverflow.com/questions/2099121/why-do-inode-numbers-start-from-1-and-not-0)
+
+
+### bitmap block content
+see `bmap`&`balloc`
+
+## lec13 - Crash Recovery
+
+### commit point
+from lec note:
+```
+the "n" value in the log header on disk indicates commit
+  non-zero == commited, ...
+  zero == not commited, ...
+  write of non-zero "n" is the "commit point"
+```
+
+from code(see *log.c:107~110* and subsequent `bwrite`):
+```
+hb->n = log.lh.n;
+// here might be confusing, see note below
+for (i = 0; i < log.lh.n; i++) {
+  hb->block[i] = log.lh.block[i];
+}
+```
+note: code here writing log header's n and blocks to install,  
+is actually atomic, because hb(buf->data) is just a buffer cache,  
+`bwrite` actually performs the atomic write to the log header block, so don't worry.
+
+### re-do log
+just as the lec note wrote:  
+it is OK to replay the log more than twice.
+
+### performance job
+1. can wrap multiple system call into a single transaction.
+2. write absorbtion in logging. 
+3. (bad) data disk blocks are written twice(one is log, the other is home).
+
+see the bottom of lec note for more. 
